@@ -20,6 +20,7 @@ use crate::syscall::{self, Syscall, SyscallReturn};
 use crate::upcall::UpcallId;
 use tock_tbf::types::{CommandPermissions, TbfFooterV2Credentials};
 
+pub use crate::process_load_utilities::ProcessLoader;
 // Export all process related types via `kernel::process::`.
 pub use crate::process_loading::ProcessLoadError;
 pub use crate::process_loading::{load_and_check_processes, load_processes};
@@ -29,6 +30,8 @@ pub use crate::process_policies::{
 };
 pub use crate::process_printer::{ProcessPrinter, ProcessPrinterContext, ProcessPrinterText};
 pub use crate::process_standard::ProcessStandard;
+
+
 
 /// Userspace process identifier.
 ///
@@ -243,6 +246,34 @@ impl PartialEq for ShortID {
     }
 }
 impl Eq for ShortID {}
+
+/// Enum used to inform scheduler why a process stopped executing (aka why
+/// `do_process()` returned).
+///
+/// This is publicly exported to allow for schedulers implemented outside of the
+/// kernel crate.
+#[derive(PartialEq, Eq)]
+pub enum StoppedExecutingReason {
+    /// The process returned because it is no longer ready to run.
+    NoWorkLeft,
+
+    /// The process faulted, and the board restart policy was configured such
+    /// that it was not restarted and there was not a kernel panic.
+    StoppedFaulted,
+
+    /// The kernel stopped the process.
+    Stopped,
+
+    /// The process was preempted because its timeslice expired.
+    TimesliceExpired,
+
+    /// The process returned because it was preempted by the kernel. This can
+    /// mean that kernel work became ready (most likely because an interrupt
+    /// fired and the kernel thread needs to execute the bottom half of the
+    /// interrupt), or because the scheduler no longer wants to execute that
+    /// process.
+    KernelPreemption,
+}
 
 /// This trait represents a generic process that the Tock scheduler can
 /// schedule.
