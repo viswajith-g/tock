@@ -23,6 +23,7 @@ use kernel::scheduler::round_robin::RoundRobinSched;
 #[allow(unused_imports)]
 use kernel::{create_capability, debug, debug_gpio, static_init};
 use sam4l::chip::Sam4lDefaultPeripherals;
+use kernel::chip::Chip;
 
 /// Support routines for debugging I/O.
 ///
@@ -30,6 +31,11 @@ use sam4l::chip::Sam4lDefaultPeripherals;
 pub mod io;
 #[allow(dead_code)]
 mod test_take_map_cell;
+
+//This variable is used to save initial value of unused sram start address before launching OTA_app
+static mut UNUSED_RAM_START_ADDR_INIT_VAL: usize = 0;
+//This variable is used to save process index loaded by tockloader, which will be used in loading app by OTA_app
+static mut PROCESS_INDEX_INIT_VAL: usize = 0;
 
 // State for loading and holding applications.
 
@@ -39,6 +45,10 @@ const NUM_PROCS: usize = 20;
 // Actual memory for holding the active process structures.
 static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS] =
     [None; NUM_PROCS];
+
+static mut PROCESSES_REGION_START_ADDRESS: [usize; NUM_PROCS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+static mut PROCESSES_REGION_SIZE: [usize; NUM_PROCS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; 
+
 
 static mut CHIP: Option<&'static sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> = None;
 static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
@@ -60,7 +70,7 @@ fn reset() -> ! {
 
 /// A structure representing this platform that holds references to all
 /// capsules for this platform.
-struct Hail {
+struct Hail<C: 'static + Chip> {
     console: &'static capsules_core::console::Console<'static>,
     gpio: &'static capsules_core::gpio::GPIO<'static, sam4l::gpio::GPIOPin<'static>>,
     alarm: &'static capsules_core::alarm::AlarmDriver<
@@ -70,6 +80,8 @@ struct Hail {
             sam4l::ast::Ast<'static>,
         >,
     >,
+    process_loader: kernel::process_load_utilities::ProcessLoader<C>,
+    nonvolatile_storage: &'static capsules_extra::nonvolatile_storage_driver::NonvolatileStorage<'static>,
     ambient_light: &'static capsules_extra::ambient_light::AmbientLight<'static>,
     temp: &'static capsules_extra::temperature::TemperatureSensor<'static>,
     ninedof: &'static capsules_extra::ninedof::NineDof<'static>,
@@ -98,7 +110,7 @@ struct Hail {
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
-impl SyscallDriverLookup for Hail {
+impl <C: 'static + Chip> SyscallDriverLookup for Hail <C> {
     fn with_driver<F, R>(&self, driver_num: usize, f: F) -> R
     where
         F: FnOnce(Option<&dyn kernel::syscall::SyscallDriver>) -> R,
@@ -117,7 +129,7 @@ impl SyscallDriverLookup for Hail {
             capsules_extra::humidity::DRIVER_NUM => f(Some(self.humidity)),
             capsules_extra::temperature::DRIVER_NUM => f(Some(self.temp)),
             capsules_extra::ninedof::DRIVER_NUM => f(Some(self.ninedof)),
-
+            capsules_extra::nonvolatile_storage_driver::DRIVER_NUM => f(Some(self.nonvolatile_storage)),
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
 
             capsules_extra::crc::DRIVER_NUM => f(Some(self.crc)),
@@ -125,12 +137,13 @@ impl SyscallDriverLookup for Hail {
             capsules_extra::dac::DRIVER_NUM => f(Some(self.dac)),
 
             kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
+            kernel::process_load_utilities::DRIVER_NUM => f(Some(&self.process_loader)),
             _ => f(None),
         }
     }
 }
 
-impl KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Hail {
+impl <C: 'static + Chip> KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Hail <C> {
     type SyscallDriverLookup = Self;
     type SyscallFilter = ();
     type ProcessFault = ();
@@ -439,6 +452,7 @@ pub unsafe fn main() {
         capsules_core::adc::DRIVER_NUM,
     )
     .finalize(components::adc_dedicated_component_static!(sam4l::adc::Adc));
+    
 
     // Setup RNG
     let rng = components::rng::RngComponent::new(
@@ -550,7 +564,7 @@ pub unsafe fn main() {
         static _eappmem: u8;
     }
 
-    kernel::process::load_processes(
+    let res = kernel::process::load_processes(
         board_kernel,
         chip,
         core::slice::from_raw_parts(
@@ -564,11 +578,20 @@ pub unsafe fn main() {
         &mut PROCESSES,
         fault_policy,
         &process_management_capability,
-    )
-    .unwrap_or_else(|err| {
-        debug!("Error loading processes!");
-        debug!("{:?}", err);
-    });
+        &mut PROCESSES_REGION_START_ADDRESS,
+        &mut PROCESSES_REGION_SIZE,
+    );
+    // .unwrap_or_else(|err| {
+    //     debug!("Error loading processes!");
+    //     debug!("{:?}", err);
+    // });
+    match res{
+        Ok((remaining_memory, index)) => {
+            UNUSED_RAM_START_ADDR_INIT_VAL = remaining_memory;
+            PROCESS_INDEX_INIT_VAL = index;
+        }
+        Err(e) => debug!("Error loading processes!: {:?}", e)
+    }
 
     board_kernel.kernel_loop(&hail, chip, Some(&hail.ipc), &main_loop_capability);
 }
