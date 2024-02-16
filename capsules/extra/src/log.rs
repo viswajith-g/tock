@@ -377,9 +377,7 @@ impl<'a, F: Flash + 'static> Log<'a, F> {
 
                 // Copy data into client buffer.
                 let data = self.get_bytes(entry_id, entry_length, pagebuffer);
-                for i in 0..entry_length {
-                    buffer[i] = data[i];
-                }
+                buffer[..entry_length].copy_from_slice(&data[..entry_length]);
 
                 // Update read entry ID and return number of bytes read.
                 self.read_entry_id.set(entry_id + entry_length);
@@ -391,10 +389,8 @@ impl<'a, F: Flash + 'static> Log<'a, F> {
     /// Writes an entry header at the given position within a page. Must write at most
     /// ENTRY_HEADER_SIZE bytes.
     fn write_entry_header(&self, length: usize, pos: usize, pagebuffer: &mut F::Page) {
-        let mut offset = 0;
-        for byte in &length.to_ne_bytes() {
+        for (offset, byte) in length.to_ne_bytes().iter().enumerate() {
             pagebuffer.as_mut()[pos + offset] = *byte;
-            offset += 1;
         }
     }
 
@@ -415,9 +411,7 @@ impl<'a, F: Flash + 'static> Log<'a, F> {
         page_offset += ENTRY_HEADER_SIZE;
 
         // Copy data to pagebuffer.
-        for offset in 0..length {
-            pagebuffer.as_mut()[page_offset + offset] = buffer[offset];
-        }
+        pagebuffer.as_mut()[page_offset..(length + page_offset)].copy_from_slice(&buffer[..length]);
 
         // Increment append offset by number of bytes appended.
         let append_entry_id = append_entry_id + length + ENTRY_HEADER_SIZE;
@@ -494,9 +488,7 @@ impl<'a, F: Flash + 'static> Log<'a, F> {
 
         // Write page header to pagebuffer.
         let id_bytes = append_entry_id.to_ne_bytes();
-        for index in 0..id_bytes.len() {
-            pagebuffer.as_mut()[index] = id_bytes[index];
-        }
+        pagebuffer.as_mut()[..id_bytes.len()].copy_from_slice(&id_bytes[..]);
 
         // Note: this is the only place where the append entry ID can cross page boundaries.
         self.append_entry_id.set(append_entry_id + PAGE_HEADER_SIZE);
@@ -791,16 +783,16 @@ impl<'a, F: Flash + 'static> LogWrite<'a> for Log<'a, F> {
 }
 
 impl<'a, F: Flash + 'static> flash::Client<F> for Log<'a, F> {
-    fn read_complete(&self, _read_buffer: &'static mut F::Page, _error: flash::Error) {
+    fn read_complete(&self, _read_buffer: &'static mut F::Page, _result: Result<(), flash::Error>) {
         // Reads are made directly from the storage volume, not through the flash interface.
         unreachable!();
     }
 
     /// If in the middle of a write operation, reset pagebuffer and finish write. If syncing, make
     /// successful client callback.
-    fn write_complete(&self, pagebuffer: &'static mut F::Page, error: flash::Error) {
-        match error {
-            flash::Error::CommandComplete => {
+    fn write_complete(&self, pagebuffer: &'static mut F::Page, result: Result<(), flash::Error>) {
+        match result.is_ok() {
+            true => {
                 match self.state.get() {
                     State::Append => {
                         // Reset pagebuffer and finish writing on the new page.
@@ -832,21 +824,25 @@ impl<'a, F: Flash + 'static> flash::Client<F> for Log<'a, F> {
                     _ => unreachable!(),
                 }
             }
-            flash::Error::FlashError | flash::Error::FlashMemoryProtectionError => {
-                // Make client callback with FAIL return code.
-                self.pagebuffer.replace(pagebuffer);
-                match self.state.get() {
-                    State::Append => {
-                        self.length.set(0);
-                        self.records_lost.set(false);
-                        self.error.set(Err(ErrorCode::FAIL));
-                        self.client_callback();
+            false => {
+                match result.unwrap_err() {
+                    flash::Error::FlashError | flash::Error::FlashMemoryProtectionError => {
+                        // Make client callback with FAIL return code.
+                        self.pagebuffer.replace(pagebuffer);
+                        match self.state.get() {
+                            State::Append => {
+                                self.length.set(0);
+                                self.records_lost.set(false);
+                                self.error.set(Err(ErrorCode::FAIL));
+                                self.client_callback();
+                            }
+                            State::Sync => {
+                                self.error.set(Err(ErrorCode::FAIL));
+                                self.client_callback();
+                            }
+                            _ => unreachable!(),
+                        }
                     }
-                    State::Sync => {
-                        self.error.set(Err(ErrorCode::FAIL));
-                        self.client_callback();
-                    }
-                    _ => unreachable!(),
                 }
             }
         }
@@ -854,9 +850,9 @@ impl<'a, F: Flash + 'static> flash::Client<F> for Log<'a, F> {
 
     /// Erase next page if log erase complete, else make client callback. Fails with BUSY if flash
     /// is busy and erase cannot be completed.
-    fn erase_complete(&self, error: flash::Error) {
-        match error {
-            flash::Error::CommandComplete => {
+    fn erase_complete(&self, result: Result<(), flash::Error>) {
+        match result.is_ok() {
+            true => {
                 let oldest_entry_id = self.oldest_entry_id.get();
                 if oldest_entry_id >= self.append_entry_id.get() - self.page_size {
                     // Erased all pages. Reset state and callback client.
@@ -880,10 +876,12 @@ impl<'a, F: Flash + 'static> flash::Client<F> for Log<'a, F> {
                     }
                 }
             }
-            flash::Error::FlashError | flash::Error::FlashMemoryProtectionError => {
-                self.error.set(Err(ErrorCode::FAIL));
-                self.client_callback();
-            }
+            false => match result.unwrap_err() {
+                flash::Error::FlashError | flash::Error::FlashMemoryProtectionError => {
+                    self.error.set(Err(ErrorCode::FAIL));
+                    self.client_callback();
+                }
+            },
         }
     }
 }

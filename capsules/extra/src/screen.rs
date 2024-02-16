@@ -23,6 +23,7 @@ use kernel::hil::screen::{ScreenPixelFormat, ScreenRotation};
 use kernel::processbuffer::ReadableProcessBuffer;
 use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
+use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::{ErrorCode, ProcessId};
 
 /// Syscall driver number.
@@ -60,7 +61,7 @@ fn screen_pixel_format_from(screen_pixel_format: usize) -> Option<ScreenPixelFor
 #[derive(Clone, Copy, PartialEq)]
 enum ScreenCommand {
     Nop,
-    SetBrightness(usize),
+    SetBrightness(u16),
     SetPower(bool),
     SetInvert(bool),
     SetRotation(ScreenRotation),
@@ -143,7 +144,7 @@ impl<'a> Screen<'a> {
         match self
             .apps
             .enter(process_id, |app, _| {
-                if app.pending_command == true {
+                if app.pending_command {
                     CommandReturn::failure(ErrorCode::BUSY)
                 } else {
                     app.pending_command = true;
@@ -201,73 +202,81 @@ impl<'a> Screen<'a> {
                     Err(ErrorCode::NOSUPPORT)
                 }
             }
-            ScreenCommand::Fill => match self
-                .apps
-                .enter(process_id, |app, kernel_data| {
-                    let len = kernel_data
-                        .get_readonly_processbuffer(ro_allow::SHARED)
-                        .map_or(0, |shared| shared.len());
-                    // Ensure we have a buffer that is the correct size
-                    if len == 0 {
-                        Err(ErrorCode::NOMEM)
-                    } else if !self.is_len_multiple_color_depth(len) {
-                        Err(ErrorCode::INVAL)
-                    } else {
-                        app.write_position = 0;
-                        app.write_len = pixels_in_bytes(
-                            app.width * app.height,
-                            self.pixel_format.get().get_bits_per_pixel(),
-                        );
-                        Ok(())
-                    }
-                })
-                .unwrap_or_else(|err| err.into())
-            {
-                Err(e) => Err(e),
-                Ok(()) => self.buffer.take().map_or(Err(ErrorCode::NOMEM), |buffer| {
-                    let len = self.fill_next_buffer_for_write(buffer);
-                    if len > 0 {
-                        self.screen.write(buffer, len)
-                    } else {
-                        self.buffer.replace(buffer);
-                        self.run_next_command(kernel::errorcode::into_statuscode(Ok(())), 0, 0);
-                        Ok(())
-                    }
-                }),
-            },
+            ScreenCommand::Fill => {
+                match self
+                    .apps
+                    .enter(process_id, |app, kernel_data| {
+                        let len = kernel_data
+                            .get_readonly_processbuffer(ro_allow::SHARED)
+                            .map_or(0, |shared| shared.len());
+                        // Ensure we have a buffer that is the correct size
+                        if len == 0 {
+                            Err(ErrorCode::NOMEM)
+                        } else if !self.is_len_multiple_color_depth(len) {
+                            Err(ErrorCode::INVAL)
+                        } else {
+                            app.write_position = 0;
+                            app.write_len = pixels_in_bytes(
+                                app.width * app.height,
+                                self.pixel_format.get().get_bits_per_pixel(),
+                            );
+                            Ok(())
+                        }
+                    })
+                    .unwrap_or_else(|err| err.into())
+                {
+                    Err(e) => Err(e),
+                    Ok(()) => self.buffer.take().map_or(Err(ErrorCode::NOMEM), |buffer| {
+                        let len = self.fill_next_buffer_for_write(buffer);
+                        if len > 0 {
+                            let mut data = SubSliceMut::new(buffer);
+                            data.slice(..len);
+                            self.screen.write(data, false)
+                        } else {
+                            self.buffer.replace(buffer);
+                            self.run_next_command(kernel::errorcode::into_statuscode(Ok(())), 0, 0);
+                            Ok(())
+                        }
+                    }),
+                }
+            }
 
-            ScreenCommand::Write(data_len) => match self
-                .apps
-                .enter(process_id, |app, kernel_data| {
-                    let len = kernel_data
-                        .get_readonly_processbuffer(ro_allow::SHARED)
-                        .map_or(0, |shared| shared.len())
-                        .min(data_len);
-                    // Ensure we have a buffer that is the correct size
-                    if len == 0 {
-                        Err(ErrorCode::NOMEM)
-                    } else if !self.is_len_multiple_color_depth(len) {
-                        Err(ErrorCode::INVAL)
-                    } else {
-                        app.write_position = 0;
-                        app.write_len = len;
-                        Ok(())
-                    }
-                })
-                .unwrap_or_else(|err| err.into())
-            {
-                Ok(()) => self.buffer.take().map_or(Err(ErrorCode::FAIL), |buffer| {
-                    let len = self.fill_next_buffer_for_write(buffer);
-                    if len > 0 {
-                        self.screen.write(buffer, len)
-                    } else {
-                        self.buffer.replace(buffer);
-                        self.run_next_command(kernel::errorcode::into_statuscode(Ok(())), 0, 0);
-                        Ok(())
-                    }
-                }),
-                Err(e) => Err(e),
-            },
+            ScreenCommand::Write(data_len) => {
+                match self
+                    .apps
+                    .enter(process_id, |app, kernel_data| {
+                        let len = kernel_data
+                            .get_readonly_processbuffer(ro_allow::SHARED)
+                            .map_or(0, |shared| shared.len())
+                            .min(data_len);
+                        // Ensure we have a buffer that is the correct size
+                        if len == 0 {
+                            Err(ErrorCode::NOMEM)
+                        } else if !self.is_len_multiple_color_depth(len) {
+                            Err(ErrorCode::INVAL)
+                        } else {
+                            app.write_position = 0;
+                            app.write_len = len;
+                            Ok(())
+                        }
+                    })
+                    .unwrap_or_else(|err| err.into())
+                {
+                    Ok(()) => self.buffer.take().map_or(Err(ErrorCode::FAIL), |buffer| {
+                        let len = self.fill_next_buffer_for_write(buffer);
+                        if len > 0 {
+                            let mut data = SubSliceMut::new(buffer);
+                            data.slice(..len);
+                            self.screen.write(data, false)
+                        } else {
+                            self.buffer.replace(buffer);
+                            self.run_next_command(kernel::errorcode::into_statuscode(Ok(())), 0, 0);
+                            Ok(())
+                        }
+                    }),
+                    Err(e) => Err(e),
+                }
+            }
             ScreenCommand::SetWriteFrame {
                 x,
                 y,
@@ -329,91 +338,87 @@ impl<'a> Screen<'a> {
     }
 
     fn fill_next_buffer_for_write(&self, buffer: &mut [u8]) -> usize {
-        self.current_process.map_or_else(
-            || 0,
-            |process_id| {
-                self.apps
-                    .enter(*process_id, |app, kernel_data| {
-                        let position = app.write_position;
-                        let mut len = app.write_len;
-                        if position < len {
-                            let buffer_size = buffer.len();
-                            let chunk_number = position / buffer_size;
-                            let initial_pos = chunk_number * buffer_size;
-                            let mut pos = initial_pos;
-                            match app.command {
-                                ScreenCommand::Write(_) => {
-                                    let res = kernel_data
-                                        .get_readonly_processbuffer(ro_allow::SHARED)
-                                        .and_then(|shared| {
-                                            shared.enter(|s| {
-                                                let mut chunks = s.chunks(buffer_size);
-                                                if let Some(chunk) = chunks.nth(chunk_number) {
-                                                    for (i, byte) in chunk.iter().enumerate() {
-                                                        if pos < len {
-                                                            buffer[i] = byte.get();
-                                                            pos = pos + 1
-                                                        } else {
-                                                            break;
-                                                        }
-                                                    }
-                                                    app.write_len - initial_pos
-                                                } else {
-                                                    // stop writing
-                                                    0
-                                                }
-                                            })
-                                        })
-                                        .unwrap_or(0);
-                                    if res > 0 {
-                                        app.write_position = pos;
-                                    }
-                                    res
-                                }
-                                ScreenCommand::Fill => {
-                                    // TODO bytes per pixel
-                                    len = len - position;
-                                    let bytes_per_pixel = pixels_in_bytes(
-                                        1,
-                                        self.pixel_format.get().get_bits_per_pixel(),
-                                    );
-                                    let mut write_len = buffer_size / bytes_per_pixel;
-                                    if write_len > len {
-                                        write_len = len
-                                    };
-                                    app.write_position =
-                                        app.write_position + write_len * bytes_per_pixel;
-                                    kernel_data
-                                        .get_readonly_processbuffer(ro_allow::SHARED)
-                                        .and_then(|shared| {
-                                            shared.enter(|data| {
-                                                let mut bytes = data.iter();
-                                                // bytes per pixel
-                                                for i in 0..bytes_per_pixel {
-                                                    if let Some(byte) = bytes.next() {
+        self.current_process.map_or(0, |process_id| {
+            self.apps
+                .enter(process_id, |app, kernel_data| {
+                    let position = app.write_position;
+                    let mut len = app.write_len;
+                    if position < len {
+                        let buffer_size = buffer.len();
+                        let chunk_number = position / buffer_size;
+                        let initial_pos = chunk_number * buffer_size;
+                        let mut pos = initial_pos;
+                        match app.command {
+                            ScreenCommand::Write(_) => {
+                                let res = kernel_data
+                                    .get_readonly_processbuffer(ro_allow::SHARED)
+                                    .and_then(|shared| {
+                                        shared.enter(|s| {
+                                            let mut chunks = s.chunks(buffer_size);
+                                            if let Some(chunk) = chunks.nth(chunk_number) {
+                                                for (i, byte) in chunk.iter().enumerate() {
+                                                    if pos < len {
                                                         buffer[i] = byte.get();
+                                                        pos += 1
+                                                    } else {
+                                                        break;
                                                     }
                                                 }
-                                                for i in 1..write_len {
-                                                    // bytes per pixel
-                                                    for j in 0..bytes_per_pixel {
-                                                        buffer[bytes_per_pixel * i + j] = buffer[j]
-                                                    }
-                                                }
-                                                write_len * bytes_per_pixel
-                                            })
+                                                app.write_len - initial_pos
+                                            } else {
+                                                // stop writing
+                                                0
+                                            }
                                         })
-                                        .unwrap_or(0)
+                                    })
+                                    .unwrap_or(0);
+                                if res > 0 {
+                                    app.write_position = pos;
                                 }
-                                _ => 0,
+                                res
                             }
-                        } else {
-                            0
+                            ScreenCommand::Fill => {
+                                // TODO bytes per pixel
+                                len -= position;
+                                let bytes_per_pixel = pixels_in_bytes(
+                                    1,
+                                    self.pixel_format.get().get_bits_per_pixel(),
+                                );
+                                let mut write_len = buffer_size / bytes_per_pixel;
+                                if write_len > len {
+                                    write_len = len
+                                };
+                                app.write_position += write_len * bytes_per_pixel;
+                                kernel_data
+                                    .get_readonly_processbuffer(ro_allow::SHARED)
+                                    .and_then(|shared| {
+                                        shared.enter(|data| {
+                                            let mut bytes = data.iter();
+                                            // bytes per pixel
+                                            for i in 0..bytes_per_pixel {
+                                                if let Some(byte) = bytes.next() {
+                                                    buffer[i] = byte.get();
+                                                }
+                                            }
+                                            for i in 1..write_len {
+                                                // bytes per pixel
+                                                for j in 0..bytes_per_pixel {
+                                                    buffer[bytes_per_pixel * i + j] = buffer[j]
+                                                }
+                                            }
+                                            write_len * bytes_per_pixel
+                                        })
+                                    })
+                                    .unwrap_or(0)
+                            }
+                            _ => 0,
                         }
-                    })
-                    .unwrap_or_else(|_| 0)
-            },
-        )
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(0)
+        })
     }
 }
 
@@ -422,11 +427,14 @@ impl<'a> hil::screen::ScreenClient for Screen<'a> {
         self.run_next_command(kernel::errorcode::into_statuscode(r), 0, 0);
     }
 
-    fn write_complete(&self, buffer: &'static mut [u8], r: Result<(), ErrorCode>) {
+    fn write_complete(&self, data: SubSliceMut<'static, u8>, r: Result<(), ErrorCode>) {
+        let buffer = data.take();
         let len = self.fill_next_buffer_for_write(buffer);
 
         if r == Ok(()) && len > 0 {
-            let _ = self.screen.write_continue(buffer, len);
+            let mut data = SubSliceMut::new(buffer);
+            data.slice(..len);
+            let _ = self.screen.write(data, true);
         } else {
             self.buffer.replace(buffer);
             self.run_next_command(kernel::errorcode::into_statuscode(r), 0, 0);
@@ -453,17 +461,14 @@ impl<'a> SyscallDriver for Screen<'a> {
         process_id: ProcessId,
     ) -> CommandReturn {
         match command_num {
-            0 =>
-            // This driver exists.
-            {
-                CommandReturn::success()
-            }
+            // Driver existence check
+            0 => CommandReturn::success(),
             // Does it have the screen setup
             1 => CommandReturn::success_u32(self.screen_setup.is_some() as u32),
             // Set power
             2 => self.enqueue_command(ScreenCommand::SetPower(data1 != 0), process_id),
             // Set Brightness
-            3 => self.enqueue_command(ScreenCommand::SetBrightness(data1), process_id),
+            3 => self.enqueue_command(ScreenCommand::SetBrightness(data1 as u16), process_id),
             // Invert on (deprecated)
             4 => self.enqueue_command(ScreenCommand::SetInvert(true), process_id),
             // Invert off (deprecated)

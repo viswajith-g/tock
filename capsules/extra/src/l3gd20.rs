@@ -184,8 +184,8 @@ enum L3gd20Status {
 #[derive(Default)]
 pub struct App {}
 
-pub struct L3gd20Spi<'a> {
-    spi: &'a dyn spi::SpiMasterDevice<'a>,
+pub struct L3gd20Spi<'a, S: spi::SpiMasterDevice<'a>> {
+    spi: &'a S,
     txbuffer: TakeCell<'static, [u8]>,
     rxbuffer: TakeCell<'static, [u8]>,
     status: Cell<L3gd20Status>,
@@ -199,13 +199,13 @@ pub struct L3gd20Spi<'a> {
     temperature_client: OptionalCell<&'a dyn sensors::TemperatureClient>,
 }
 
-impl<'a> L3gd20Spi<'a> {
+impl<'a, S: spi::SpiMasterDevice<'a>> L3gd20Spi<'a, S> {
     pub fn new(
-        spi: &'a dyn spi::SpiMasterDevice<'a>,
+        spi: &'a S,
         txbuffer: &'static mut [u8; L3GD20_TX_SIZE],
         rxbuffer: &'static mut [u8; L3GD20_RX_SIZE],
         grants: Grant<App, UpcallCount<1>, AllowRoCount<0>, AllowRwCount<0>>,
-    ) -> L3gd20Spi<'a> {
+    ) -> L3gd20Spi<'a, S> {
         // setup and return struct
         L3gd20Spi {
             spi: spi,
@@ -249,7 +249,7 @@ impl<'a> L3gd20Spi<'a> {
         self.hpf_enabled.set(enabled);
         self.txbuffer.take().map(|buf| {
             buf[0] = L3GD20_REG_CTRL_REG5;
-            buf[1] = if enabled { 1 } else { 0 } << 4;
+            buf[1] = u8::from(enabled) << 4;
             // TODO verify SPI return value
             let _ = self.spi.read_write_bytes(buf, None, 2);
         });
@@ -312,7 +312,7 @@ impl<'a> L3gd20Spi<'a> {
     }
 }
 
-impl SyscallDriver for L3gd20Spi<'_> {
+impl<'a, S: spi::SpiMasterDevice<'a>> SyscallDriver for L3gd20Spi<'a, S> {
     fn command(
         &self,
         command_num: usize,
@@ -326,7 +326,7 @@ impl SyscallDriver for L3gd20Spi<'_> {
 
         let match_or_empty_or_nonexistent = self.current_process.map_or(true, |current_process| {
             self.grants
-                .enter(*current_process, |_, _| current_process == &process_id)
+                .enter(current_process, |_, _| current_process == process_id)
                 .unwrap_or(true)
         });
 
@@ -379,7 +379,7 @@ impl SyscallDriver for L3gd20Spi<'_> {
             // Set High Pass Filter Mode and Divider
             5 => {
                 if self.status.get() == L3gd20Status::Idle {
-                    let enabled = if data1 == 1 { true } else { false };
+                    let enabled = data1 == 1;
                     self.enable_hpf(enabled);
                     CommandReturn::success()
                 } else {
@@ -414,7 +414,7 @@ impl SyscallDriver for L3gd20Spi<'_> {
     }
 }
 
-impl spi::SpiMasterClient for L3gd20Spi<'_> {
+impl<'a, S: spi::SpiMasterDevice<'a>> spi::SpiMasterClient for L3gd20Spi<'a, S> {
     fn read_write_done(
         &self,
         write_buffer: &'static mut [u8],
@@ -423,20 +423,16 @@ impl spi::SpiMasterClient for L3gd20Spi<'_> {
         _status: Result<(), ErrorCode>,
     ) {
         self.current_process.map(|proc_id| {
-            let _result = self.grants.enter(*proc_id, |_app, upcalls| {
+            let _result = self.grants.enter(proc_id, |_app, upcalls| {
                 self.status.set(match self.status.get() {
                     L3gd20Status::IsPresent => {
                         let present = if let Some(ref buf) = read_buffer {
-                            if buf[1] == L3GD20_WHO_AM_I {
-                                true
-                            } else {
-                                false
-                            }
+                            buf[1] == L3GD20_WHO_AM_I
                         } else {
                             false
                         };
                         upcalls
-                            .schedule_upcall(0, (1, if present { 1 } else { 0 }, 0))
+                            .schedule_upcall(0, (1, usize::from(present), 0))
                             .ok();
                         L3gd20Status::Idle
                     }
@@ -533,7 +529,7 @@ impl spi::SpiMasterClient for L3gd20Spi<'_> {
     }
 }
 
-impl<'a> sensors::NineDof<'a> for L3gd20Spi<'a> {
+impl<'a, S: spi::SpiMasterDevice<'a>> sensors::NineDof<'a> for L3gd20Spi<'a, S> {
     fn set_client(&self, nine_dof_client: &'a dyn sensors::NineDofClient) {
         self.nine_dof_client.replace(nine_dof_client);
     }
@@ -548,7 +544,7 @@ impl<'a> sensors::NineDof<'a> for L3gd20Spi<'a> {
     }
 }
 
-impl<'a> sensors::TemperatureDriver<'a> for L3gd20Spi<'a> {
+impl<'a, S: spi::SpiMasterDevice<'a>> sensors::TemperatureDriver<'a> for L3gd20Spi<'a, S> {
     fn set_client(&self, temperature_client: &'a dyn sensors::TemperatureClient) {
         self.temperature_client.replace(temperature_client);
     }

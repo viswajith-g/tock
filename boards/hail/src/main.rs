@@ -58,15 +58,12 @@ static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText>
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
 
-// Function for the process console to use to reboot the board
-fn reset() -> ! {
-    unsafe {
-        cortexm4::scb::reset();
-    }
-    loop {
-        cortexm4::support::nop();
-    }
-}
+type SI7021Sensor = components::si7021::SI7021ComponentType<
+    capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm<'static, sam4l::ast::Ast<'static>>,
+    capsules_core::virtualizers::virtual_i2c::I2CDevice<'static, sam4l::i2c::I2CHw<'static>>,
+>;
+type TemperatureDriver = components::temperature::TemperatureComponentType<SI7021Sensor>;
+type HumidityDriver = components::humidity::HumidityComponentType<SI7021Sensor>;
 
 /// A structure representing this platform that holds references to all
 /// capsules for this platform.
@@ -83,9 +80,9 @@ struct Hail<C: 'static + Chip> {
     process_loader: kernel::process_load_utilities::ProcessLoader<C>,
     nonvolatile_storage: &'static capsules_extra::nonvolatile_storage_driver::NonvolatileStorage<'static>,
     ambient_light: &'static capsules_extra::ambient_light::AmbientLight<'static>,
-    temp: &'static capsules_extra::temperature::TemperatureSensor<'static>,
+    temp: &'static TemperatureDriver,
     ninedof: &'static capsules_extra::ninedof::NineDof<'static>,
-    humidity: &'static capsules_extra::humidity::HumiditySensor<'static>,
+    humidity: &'static HumidityDriver,
     spi: &'static capsules_core::spi_controller::Spi<
         'static,
         capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
@@ -154,7 +151,7 @@ impl <C: 'static + Chip> KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripher
     type ContextSwitchCallback = ();
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
-        &self
+        self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
         &()
@@ -244,22 +241,15 @@ unsafe fn set_pin_primary_functions(peripherals: &Sam4lDefaultPeripherals) {
 /// removed when this function returns. Otherwise, the stack space used for
 /// these static_inits is wasted.
 #[inline(never)]
-unsafe fn create_peripherals(
-    pm: &'static sam4l::pm::PowerManager,
-) -> &'static Sam4lDefaultPeripherals {
-    static_init!(Sam4lDefaultPeripherals, Sam4lDefaultPeripherals::new(pm))
-}
-
-/// Board's main function.
-///
-/// This is called from the reset handler after memory initialization is
-/// complete.
-#[no_mangle]
-pub unsafe fn main() {
+unsafe fn start() -> (
+    &'static kernel::Kernel,
+    Hail,
+    &'static sam4l::chip::Sam4l<Sam4lDefaultPeripherals>,
+) {
     sam4l::init();
 
     let pm = static_init!(sam4l::pm::PowerManager, sam4l::pm::PowerManager::new());
-    let peripherals = create_peripherals(pm);
+    let peripherals = static_init!(Sam4lDefaultPeripherals, Sam4lDefaultPeripherals::new(pm));
 
     pm.setup_system_clock(
         sam4l::pm::SystemClockSource::PllExternalOscillatorAt48MHz {
@@ -284,7 +274,6 @@ pub unsafe fn main() {
     // functions.
     let process_management_capability =
         create_capability!(capabilities::ProcessManagementCapability);
-    let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
     let memory_allocation_capability = create_capability!(capabilities::MemoryAllocationCapability);
 
     // Configure kernel debug gpios as early as possible
@@ -327,7 +316,7 @@ pub unsafe fn main() {
         uart_mux,
         mux_alarm,
         process_printer,
-        Some(reset),
+        Some(cortexm4::support::reset),
     )
     .finalize(components::process_console_component_static!(
         sam4l::ast::Ast<'static>
@@ -359,13 +348,13 @@ pub unsafe fn main() {
         capsules_extra::temperature::DRIVER_NUM,
         si7021,
     )
-    .finalize(components::temperature_component_static!());
+    .finalize(components::temperature_component_static!(SI7021Sensor));
     let humidity = components::humidity::HumidityComponent::new(
         board_kernel,
         capsules_extra::humidity::DRIVER_NUM,
         si7021,
     )
-    .finalize(components::humidity_component_static!());
+    .finalize(components::humidity_component_static!(SI7021Sensor));
 
     // Configure the ISL29035, device address 0x44
     let isl29035 = components::isl29035::Isl29035Component::new(sensors_i2c, mux_alarm).finalize(
@@ -593,5 +582,14 @@ pub unsafe fn main() {
         Err(e) => debug!("Error loading processes!: {:?}", e)
     }
 
-    board_kernel.kernel_loop(&hail, chip, Some(&hail.ipc), &main_loop_capability);
+    (board_kernel, hail, chip)
+}
+
+/// Main function called after RAM initialized.
+#[no_mangle]
+pub unsafe fn main() {
+    let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
+
+    let (board_kernel, platform, chip) = start();
+    board_kernel.kernel_loop(&platform, chip, Some(&platform.ipc), &main_loop_capability);
 }

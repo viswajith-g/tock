@@ -89,12 +89,19 @@
 //!    this use case. It is likely we will have to create new interfaces as new
 //!    use cases are discovered.
 
-#![feature(core_intrinsics)]
 #![warn(unreachable_pub)]
 #![no_std]
 
-// Define the kernel major and minor versions.
+/// Kernel major version.
+///
+/// This is compiled with the crate to enable for checking of compatibility with
+/// loaded apps. Both major and minor version constants are updated during a
+/// release.
 pub const KERNEL_MAJOR_VERSION: u16 = 2;
+/// Kernel minor version.
+///
+/// This is compiled with the crate to enable for checking of compatibility with
+/// loaded apps.
 pub const KERNEL_MINOR_VERSION: u16 = 1;
 
 pub mod capabilities;
@@ -110,6 +117,7 @@ pub mod ipc;
 pub mod platform;
 pub mod process;
 pub mod process_checker;
+pub mod process_load_utilities;
 pub mod processbuffer;
 pub mod scheduler;
 pub mod storage_permissions;

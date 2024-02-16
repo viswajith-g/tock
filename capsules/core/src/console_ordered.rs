@@ -411,7 +411,7 @@ impl<'a, A: Alarm<'a>> SyscallDriver for ConsoleOrdered<'a, A> {
     ///
     /// ### `command_num`
     ///
-    /// - `0`: Driver check.
+    /// - `0`: Driver existence check.
     /// - `1`: Transmits a buffer passed via `allow`, up to the length
     ///        passed in `arg1`
     fn command(&self, cmd_num: usize, arg1: usize, _: usize, appid: ProcessId) -> CommandReturn {
@@ -478,7 +478,7 @@ impl<'a, A: Alarm<'a>> uart::ReceiveClient for ConsoleOrdered<'a, A> {
                                         read.mut_enter(|data| {
                                             let mut c = 0;
                                             for (a, b) in data.iter().zip(rx_buffer) {
-                                                c = c + 1;
+                                                c += 1;
                                                 a.set(*b);
                                             }
                                             c

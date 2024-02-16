@@ -317,7 +317,7 @@ impl<'a> NonvolatileStorage<'a> {
                                 self.userspace_call_driver(command, offset, active_len)
                             } else {
                                 // Some app is using the storage, we must wait.
-                                if app.pending_command == true {
+                                if app.pending_command {
                                     // No more room in the queue, nowhere to store this
                                     // request.
                                     Err(ErrorCode::NOMEM)
@@ -355,7 +355,7 @@ impl<'a> NonvolatileStorage<'a> {
                                 _ => Err(ErrorCode::FAIL),
                             }
                         } else {
-                            if self.kernel_pending_command.get() == true {
+                            if self.kernel_pending_command.get() {
                                 Err(ErrorCode::NOMEM)
                             } else {
                                 self.kernel_pending_command.set(true);
@@ -504,7 +504,7 @@ impl hil::nonvolatile_storage::NonvolatileStorageClient for NonvolatileStorage<'
                                 read.mut_enter(|app_buffer| {
                                     let read_len = cmp::min(app_buffer.len(), length);
 
-                                    let d = &app_buffer[0..(read_len as usize)];
+                                    let d = &app_buffer[0..read_len];
                                     for (i, c) in buffer[0..read_len].iter().enumerate() {
                                         d[i].set(*c);
                                     }

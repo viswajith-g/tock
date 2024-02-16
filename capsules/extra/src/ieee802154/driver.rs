@@ -25,8 +25,19 @@ use kernel::{ErrorCode, ProcessId};
 const MAX_NEIGHBORS: usize = 4;
 const MAX_KEYS: usize = 4;
 
+/// IDs for subscribed upcalls.
+mod upcall {
+    /// Frame is received
+    pub const FRAME_RECEIVED: usize = 0;
+    /// Frame is transmitted
+    pub const FRAME_TRANSMITTED: usize = 1;
+    /// Number of upcalls.
+    pub const COUNT: u8 = 2;
+}
+
 /// Ids for read-only allow buffers
 mod ro_allow {
+    /// Write buffer. Contains the frame payload to be transmitted.
     pub const WRITE: usize = 0;
     /// The number of allow buffers the kernel stores for this grant
     pub const COUNT: u8 = 1;
@@ -34,7 +45,13 @@ mod ro_allow {
 
 /// Ids for read-write allow buffers
 mod rw_allow {
+    /// Read buffer. Will contain the received frame.
     pub const READ: usize = 0;
+    /// Config buffer.
+    ///
+    /// Used to contain miscellaneous data associated with some commands because
+    /// the system call parameters / return codes are not enough to convey the
+    /// desired information.
     pub const CFG: usize = 1;
     /// The number of allow buffers the kernel stores for this grant
     pub const COUNT: u8 = 2;
@@ -43,19 +60,10 @@ mod rw_allow {
 use capsules_core::driver;
 pub const DRIVER_NUM: usize = driver::NUM::Ieee802154 as usize;
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 struct DeviceDescriptor {
     short_addr: u16,
     long_addr: [u8; 8],
-}
-
-impl Default for DeviceDescriptor {
-    fn default() -> Self {
-        DeviceDescriptor {
-            short_addr: 0,
-            long_addr: [0; 8],
-        }
-    }
 }
 
 /// The Key ID mode mapping expected by the userland driver
@@ -193,7 +201,7 @@ pub struct RadioDriver<'a> {
     /// Grant of apps that use this radio driver.
     apps: Grant<
         App,
-        UpcallCount<2>,
+        UpcallCount<{ upcall::COUNT }>,
         AllowRoCount<{ ro_allow::COUNT }>,
         AllowRwCount<{ rw_allow::COUNT }>,
     >,
@@ -211,6 +219,12 @@ pub struct RadioDriver<'a> {
 
     /// Used to save result for passing a callback from a deferred call.
     saved_result: OptionalCell<Result<(), ErrorCode>>,
+
+    /// Used to allow Thread to specify a key procedure for 15.4 to use for link layer encryption
+    backup_key_procedure: OptionalCell<&'a dyn framer::KeyProcedure>,
+
+    /// Used to allow Thread to specify the 15.4 device procedure as used in nonce generation
+    backup_device_procedure: OptionalCell<&'a dyn framer::DeviceProcedure>,
 }
 
 impl<'a> RadioDriver<'a> {
@@ -218,7 +232,7 @@ impl<'a> RadioDriver<'a> {
         mac: &'a dyn device::MacDevice<'a>,
         grant: Grant<
             App,
-            UpcallCount<2>,
+            UpcallCount<{ upcall::COUNT }>,
             AllowRoCount<{ ro_allow::COUNT }>,
             AllowRwCount<{ rw_allow::COUNT }>,
         >,
@@ -236,7 +250,17 @@ impl<'a> RadioDriver<'a> {
             deferred_call: DeferredCall::new(),
             saved_processid: OptionalCell::empty(),
             saved_result: OptionalCell::empty(),
+            backup_key_procedure: OptionalCell::empty(),
+            backup_device_procedure: OptionalCell::empty(),
         }
+    }
+
+    pub fn set_key_procedure(&self, key_procedure: &'a dyn framer::KeyProcedure) {
+        self.backup_key_procedure.set(key_procedure);
+    }
+
+    pub fn set_device_procedure(&self, device_procedure: &'a dyn framer::DeviceProcedure) {
+        self.backup_device_procedure.set(device_procedure);
     }
 
     // Neighbor management functions
@@ -475,7 +499,7 @@ impl DeferredCallClient for RadioDriver<'static> {
                 // Unwrap fail = missing processid
                 upcalls
                     .schedule_upcall(
-                        1,
+                        upcall::FRAME_TRANSMITTED,
                         (
                             kernel::errorcode::into_statuscode(
                                 self.saved_result.unwrap_or_panic(), // Unwrap fail = missing result
@@ -497,15 +521,26 @@ impl framer::DeviceProcedure for RadioDriver<'_> {
     /// Gets the long address corresponding to the neighbor that matches the given
     /// MAC address. If no such neighbor exists, returns `None`.
     fn lookup_addr_long(&self, addr: MacAddress) -> Option<[u8; 8]> {
-        self.neighbors.and_then(|neighbors| {
-            neighbors[..self.num_neighbors.get()]
-                .iter()
-                .find(|neighbor| match addr {
-                    MacAddress::Short(addr) => addr == neighbor.short_addr,
-                    MacAddress::Long(addr) => addr == neighbor.long_addr,
-                })
-                .map(|neighbor| neighbor.long_addr)
-        })
+        self.neighbors
+            .and_then(|neighbors| {
+                neighbors[..self.num_neighbors.get()]
+                    .iter()
+                    .find(|neighbor| match addr {
+                        MacAddress::Short(addr) => addr == neighbor.short_addr,
+                        MacAddress::Long(addr) => addr == neighbor.long_addr,
+                    })
+                    .map(|neighbor| neighbor.long_addr)
+            })
+            .map_or_else(
+                // This serves the same purpose as the KeyProcedure lookup (see comment).
+                // This is kept as a remnant of 15.4, but should potentially be removed moving forward
+                // as Thread does not have a use to add a Device procedure.
+                || {
+                    self.backup_device_procedure
+                        .and_then(|procedure| procedure.lookup_addr_long(addr))
+                },
+                |res| Some(res),
+            )
     }
 }
 
@@ -514,38 +549,31 @@ impl framer::KeyProcedure for RadioDriver<'_> {
     /// level `level` and key ID `key_id`. If no such key matches, returns
     /// `None`.
     fn lookup_key(&self, level: SecurityLevel, key_id: KeyId) -> Option<[u8; 16]> {
-        self.keys.and_then(|keys| {
-            keys[..self.num_keys.get()]
-                .iter()
-                .find(|key| key.level == level && key.key_id == key_id)
-                .map(|key| key.key)
-        })
+        self.keys
+            .and_then(|keys| {
+                keys[..self.num_keys.get()]
+                    .iter()
+                    .find(|key| key.level == level && key.key_id == key_id)
+                    .map(|key| key.key)
+            })
+            .map_or_else(
+                // Thread needs to add a MAC key to the 15.4 network keys so that the 15.4 framer
+                // can decrypt incoming Thread 15.4 frames. The backup_device_procedure was added
+                // so that if the lookup procedure failed to find a key here, it would check a
+                // "backup" procedure (Thread in this case). This is somewhat clunky and removing
+                // the network keys being stored in the 15.4 driver is a longer term TODO.
+                || {
+                    self.backup_key_procedure.and_then(|procedure| {
+                        // TODO: security_level / keyID are hardcoded for now
+                        procedure.lookup_key(SecurityLevel::EncMic32, KeyId::Index(2))
+                    })
+                },
+                |res| Some(res),
+            )
     }
 }
 
 impl SyscallDriver for RadioDriver<'_> {
-    /// Setup buffers to read/write from.
-    ///
-    /// ### `allow_num`
-    ///
-    /// - `0`: Read buffer. Will contain the received frame.
-    /// - `1`: Config buffer. Used to contain miscellaneous data associated with
-    ///        some commands because the system call parameters / return codes are
-    ///        not enough to convey the desired information.
-
-    /// Setup shared buffers.
-    ///
-    /// ### `allow_num`
-    ///
-    /// - `0`: Write buffer. Contains the frame payload to be transmitted.
-
-    // Setup callbacks.
-    //
-    // ### `subscribe_num`
-    //
-    // - `0`: Setup callback for when frame is received.
-    // - `1`: Setup callback for when frame is transmitted.
-
     /// IEEE 802.15.4 MAC device control.
     ///
     /// For some of the below commands, one 32-bit argument is not enough to
@@ -558,7 +586,7 @@ impl SyscallDriver for RadioDriver<'_> {
     ///
     /// ### `command_num`
     ///
-    /// - `0`: Driver check.
+    /// - `0`: Driver existence check.
     /// - `1`: Return radio status. Ok(())/OFF = on/off.
     /// - `2`: Set short MAC address.
     /// - `3`: Set long MAC address.
@@ -737,7 +765,7 @@ impl SyscallDriver for RadioDriver<'_> {
                 .unwrap_or_else(|err| CommandReturn::failure(err.into())),
 
             18 => match self.remove_neighbor(arg1) {
-                Ok(_) => CommandReturn::success(),
+                Ok(()) => CommandReturn::success(),
                 Err(e) => CommandReturn::failure(e),
             },
             19 => {
@@ -878,8 +906,8 @@ impl SyscallDriver for RadioDriver<'_> {
                     .map_or_else(
                         |err| CommandReturn::failure(err.into()),
                         |setup_tx| match setup_tx {
-                            Ok(_) => self.do_next_tx_sync(processid).into(),
-                            Err(e) => CommandReturn::failure(e.into()),
+                            Ok(()) => self.do_next_tx_sync(processid).into(),
+                            Err(e) => CommandReturn::failure(e),
                         },
                     )
             }
@@ -899,7 +927,7 @@ impl device::TxClient for RadioDriver<'_> {
             let _ = self.apps.enter(processid, |_app, upcalls| {
                 upcalls
                     .schedule_upcall(
-                        1,
+                        upcall::FRAME_TRANSMITTED,
                         (
                             kernel::errorcode::into_statuscode(result),
                             acked as usize,
@@ -952,7 +980,7 @@ impl device::RxClient for RadioDriver<'_> {
                 let dst_addr = encode_address(&header.dst_addr);
                 let src_addr = encode_address(&header.src_addr);
                 kernel_data
-                    .schedule_upcall(0, (pans, dst_addr, src_addr))
+                    .schedule_upcall(upcall::FRAME_RECEIVED, (pans, dst_addr, src_addr))
                     .ok();
             }
         });
