@@ -151,13 +151,6 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 static mut CHIP: Option<&'static nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>> = None;
 static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
 
-// //Arrays are used to save start address and length of process, which will be used in checking overlap region between a new app and already loaded apps
-// static mut PROCESSES_REGION_START_ADDRESS: [usize; NUM_PROCS] = [0, 0, 0, 0, 0, 0, 0, 0];
-// static mut PROCESSES_REGION_SIZE: [usize; NUM_PROCS] = [0, 0, 0, 0, 0, 0, 0, 0]; 
-
-// static new_app_start_addr: usize = 0;
-// static new_app_length: usize = 0;
-
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
@@ -929,10 +922,6 @@ pub unsafe fn main() {
         )
     );
 
-    //--------------------------------------------------------------------------
-    // Dynamic App Load (OTA)
-    //--------------------------------------------------------------------------
-
     let dynamic_app_loader = components::app_loader::AppLoaderComponent::new(
             board_kernel,
             capsules_extra::app_loader::DRIVER_NUM,
@@ -943,7 +932,7 @@ pub unsafe fn main() {
             nrf52840::nvmc::Nvmc 
         ));
     
-    debug!("Created a dynamic_app_loader instance");
+    // debug!("Created a dynamic_app_loader instance");
 
     //--------------------------------------------------------------------------
     // PLATFORM SETUP, SCHEDULER, AND START KERNEL LOOP

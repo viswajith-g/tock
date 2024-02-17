@@ -32,6 +32,7 @@ use kernel::hil::radio;
 use kernel::hil::radio::{RadioConfig, RadioData};
 use kernel::hil::symmetric_encryption::AES128;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
+use kernel::platform::chip::Chip;
 use kernel::process_checker::basic::AppCheckerSha256;
 use kernel::scheduler::round_robin::RoundRobinSched;
 
@@ -44,7 +45,9 @@ use sam4l::chip::Sam4lDefaultPeripherals;
 
 use capsules_extra::sha256::Sha256Software;
 
-use components;
+// use cortexm4::scb::reset;
+// use crate::reset;
+
 use components::alarm::{AlarmDriverComponent, AlarmMuxComponent};
 use components::console::{ConsoleOrderedComponent, UartMuxComponent};
 use components::crc::CrcComponent;
@@ -92,7 +95,7 @@ const NUM_PROCS: usize = 4;
 const RADIO_CHANNEL: u8 = 26;
 const DST_MAC_ADDR: MacAddress = MacAddress::Short(49138);
 const DEFAULT_CTX_PREFIX_LEN: u8 = 8; //Length of context for 6LoWPAN compression
-const DEFAULT_CTX_PREFIX: [u8; 16] = [0x0 as u8; 16]; //Context for 6LoWPAN Compression
+const DEFAULT_CTX_PREFIX: [u8; 16] = [0x0_u8; 16]; //Context for 6LoWPAN Compression
 const PAN_ID: u16 = 0xABCD;
 
 // how should the kernel respond when a process faults
@@ -104,22 +107,20 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 static mut CHIP: Option<&'static sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> = None;
 static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
 
+//This variable is used to save initial value of unused sram start address before launching OTA_app
+static mut UNUSED_RAM_START_ADDR_INIT_VAL: usize = 0;
+//This variable is used to save process index loaded by tockloader, which will be used in loading app by OTA_app
+static mut PROCESS_INDEX_INIT_VAL: usize = 0;
+//This arrays is used to save start address and length of process, which will be used in checking overlap region between a new app and already loaded apps
+static mut PROCESSES_REGION_START_ADDRESS: [usize; NUM_PROCS] = [0, 0, 0, 0];
+static mut PROCESSES_REGION_SIZE: [usize; NUM_PROCS] = [0, 0, 0, 0]; 
+
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
 
-// Function for the process console to use to reboot the board
-fn reset() -> ! {
-    unsafe {
-        cortexm4::scb::reset();
-    }
-    loop {
-        cortexm4::support::nop();
-    }
-}
-
-struct Imix {
+struct Imix <C: 'static + Chip> {
     pconsole: &'static capsules_core::process_console::ProcessConsole<
         'static,
         { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
@@ -139,6 +140,7 @@ struct Imix {
     humidity: &'static capsules_extra::humidity::HumiditySensor<'static>,
     ambient_light: &'static capsules_extra::ambient_light::AmbientLight<'static>,
     adc: &'static capsules_core::adc::AdcDedicated<'static, sam4l::adc::Adc<'static>>,
+    process_loader: kernel::process_load_utilities::ProcessLoader<C>,
     led: &'static capsules_core::led::LedDriver<
         'static,
         LedHigh<'static, sam4l::gpio::GPIOPin<'static>>,
@@ -185,7 +187,7 @@ static mut RF233_REG_WRITE: [u8; 2] = [0x00; 2];
 static mut RF233_REG_READ: [u8; 2] = [0x00; 2];
 static mut SHA256_CHECKER_BUF: [u8; 32] = [0; 32];
 
-impl SyscallDriverLookup for Imix {
+impl <C: 'static + Chip> SyscallDriverLookup for Imix <C>{
     fn with_driver<F, R>(&self, driver_num: usize, f: F) -> R
     where
         F: FnOnce(Option<&dyn kernel::syscall::SyscallDriver>) -> R,
@@ -212,12 +214,13 @@ impl SyscallDriverLookup for Imix {
             }
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
             kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
+            kernel::process_load_utilities::DRIVER_NUM => f(Some(&self.process_loader)),
             _ => f(None),
         }
     }
 }
 
-impl KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Imix {
+impl <C: 'static + Chip> KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Imix <C> {
     type SyscallDriverLookup = Self;
     type SyscallFilter = ();
     type ProcessFault = ();
@@ -229,7 +232,7 @@ impl KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Imix {
     type ContextSwitchCallback = ();
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
-        &self
+        self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
         &()
@@ -402,6 +405,10 @@ pub unsafe fn main() {
     let uart_mux = UartMuxComponent::new(&peripherals.usart3, 115200)
         .finalize(components::uart_mux_component_static!());
 
+    peripherals.usart0.set_mode(sam4l::usart::UsartMode::Uart);
+    let ota_uart = UartMuxComponent::new(&peripherals.usart0, 115200)
+        .finalize(components::uart_mux_component_static!());
+
     // # TIMER
     let mux_alarm = AlarmMuxComponent::new(&peripherals.ast)
         .finalize(components::alarm_mux_component_static!(sam4l::ast::Ast));
@@ -413,10 +420,10 @@ pub unsafe fn main() {
 
     let pconsole = ProcessConsoleComponent::new(
         board_kernel,
-        uart_mux,
+        ota_uart,
         mux_alarm,
         process_printer,
-        Some(reset),
+        Some(cortexm4::support::reset),
     )
     .finalize(components::process_console_component_static!(
         sam4l::ast::Ast
@@ -623,11 +630,12 @@ pub unsafe fn main() {
     // For now, assign the 802.15.4 MAC address on the device as
     // simply a 16-bit short address which represents the last 16 bits
     // of the serial number of the sam4l for this device.  In the
-    // future, we could generate the MAC address by hashing the full
+    // future, we could generate the DEFAULT_EXT_SRC_MAC address by hashing the full
     // 120-bit serial number
     let serial_num: sam4l::serial_num::SerialNum = sam4l::serial_num::SerialNum::new();
     let serial_num_bottom_16 = (serial_num.get_lower_64() & 0x0000_0000_0000_ffff) as u16;
     let src_mac_from_serial_num: MacAddress = MacAddress::Short(serial_num_bottom_16);
+    // const DEFAULT_EXT_SRC_MAC: [u8; 8] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
 
     let aes_mux = static_init!(
         MuxAES128CCM<'static, sam4l::aes::Aes>,
@@ -645,6 +653,7 @@ pub unsafe fn main() {
         aes_mux,
         PAN_ID,
         serial_num_bottom_16,
+        // DEFAULT_EXT_SRC_MAC,
     )
     .finalize(components::ieee802154_component_static!(
         capsules_extra::rf233::RF233<
@@ -673,10 +682,13 @@ pub unsafe fn main() {
         board_kernel,
         capsules_extra::nonvolatile_storage_driver::DRIVER_NUM,
         &peripherals.flash_controller,
-        0x60000,                          // Start address for userspace accessible region
+        0x40000,                          // Start address for userspace accessible region
         0x20000,                          // Length of userspace accessible region
         &_sstorage as *const u8 as usize, //start address of kernel region
         &_estorage as *const u8 as usize - &_sstorage as *const u8 as usize, // length of kernel region
+        NUM_PROCS,
+        &PROCESSES_REGION_START_ADDRESS,
+        &PROCESSES_REGION_SIZE,
     )
     .finalize(components::nonvolatile_storage_component_static!(
         sam4l::flashcalw::FLASHCALW
@@ -720,6 +732,26 @@ pub unsafe fn main() {
     )
     .finalize(components::udp_driver_component_static!(sam4l::ast::Ast));
 
+    //--------------------------------------------------------------------------
+    // PROCESSES Loader for OTA app
+    //--------------------------------------------------------------------------
+
+    let process_loader = kernel::process::ProcessLoader::init(
+        board_kernel,
+        chip,
+        &FAULT_RESPONSE,
+        &grant_cap,
+        PROCESSES.as_mut_ptr(),
+        PROCESSES_REGION_START_ADDRESS.as_mut_ptr(),
+        PROCESSES_REGION_SIZE.as_mut_ptr(),
+        NUM_PROCS,
+        &_sapps as *const u8 as usize,
+        &_eapps as *const u8 as usize,
+        &_eappmem as *const u8 as usize,
+        &UNUSED_RAM_START_ADDR_INIT_VAL,
+        &PROCESS_INDEX_INIT_VAL,
+    );
+
     let scheduler = components::sched::round_robin::RoundRobinComponent::new(&PROCESSES)
         .finalize(components::round_robin_component_static!(NUM_PROCS));
 
@@ -744,6 +776,7 @@ pub unsafe fn main() {
         usb_driver,
         nrf51822: nrf_serialization,
         nonvolatile_storage,
+        process_loader,
         scheduler,
         systick: cortexm4::systick::SysTick::new(),
         //credentials_checking_policy: checker,
@@ -809,7 +842,7 @@ pub unsafe fn main() {
     .finalize(components::multi_alarm_test_component_buf!(sam4l::ast::Ast))
     .run();*/
 
-    debug!("Initialization complete. Entering main loop");
+    // debug!("Initialization complete. Entering main loop");
 
     // These symbols are defined in the linker script.
     extern "C" {
@@ -823,9 +856,9 @@ pub unsafe fn main() {
         static _eappmem: u8;
     }
 
-    kernel::process::load_and_check_processes(
+    let res = kernel::process::load_processes(
         board_kernel,
-        &imix,
+        // &imix,
         chip,
         core::slice::from_raw_parts(
             &_sapps as *const u8,
@@ -838,11 +871,19 @@ pub unsafe fn main() {
         &mut PROCESSES,
         &FAULT_RESPONSE,
         &process_mgmt_cap,
-    )
-    .unwrap_or_else(|err| {
-        debug!("Error loading processes!");
-        debug!("{:?}", err);
-    });
-
+        &mut PROCESSES_REGION_START_ADDRESS,
+        &mut PROCESSES_REGION_SIZE,
+    );
+    // .unwrap_or_else(|err| {
+    //     debug!("Error loading processes!");
+    //     debug!("{:?}", err);
+    // });
+    match res{
+        Ok((remaining_memory, index)) => {
+            UNUSED_RAM_START_ADDR_INIT_VAL = remaining_memory;
+            PROCESS_INDEX_INIT_VAL = index;
+        }
+        Err(e) => debug!("Error loading processes!: {:?}", e)
+    }
     board_kernel.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap);
 }

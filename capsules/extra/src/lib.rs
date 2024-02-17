@@ -11,6 +11,7 @@ pub mod tutorials;
 #[macro_use]
 pub mod net;
 
+pub mod app_loader;
 pub mod adc_microphone;
 pub mod air_quality;
 pub mod ambient_light;

@@ -195,10 +195,8 @@ impl<'a> AppLoader<'a> {
                     || length > self.new_app_length.get()
                     || offset + length > self.new_app_length.get()
                 {
-                    debug!("Invalid bounds!\n");
                     return Err(ErrorCode::INVAL);
                 }
-                debug!("offset: {}\n length: {}\n", offset, length);
             }
         }
 
@@ -240,7 +238,6 @@ impl<'a> AppLoader<'a> {
 
                                 // Need to copy bytes if this is a write!
                                 if command == NonvolatileCommand::UserspaceWrite {
-                                    debug!("userspace_write command matched");
                                     let _ = kernel_data
                                         .get_readonly_processbuffer(ro_allow::WRITE)
                                         .and_then(|write| {
@@ -252,8 +249,6 @@ impl<'a> AppLoader<'a> {
                                                     // also check for tbf header validity (TODO)
                                                     let write_len =
                                                         cmp::min(active_len, kernel_buffer.len());
-
-                                                    debug!("write len: {}", write_len);
 
                                                     let d = &app_buffer[0..write_len];
                                                     for (i, c) in kernel_buffer[0..write_len]
@@ -301,15 +296,12 @@ impl<'a> AppLoader<'a> {
         // storage.
         let physical_address = offset + self.new_app_start_addr.get();// offset + self.userspace_start_address;
 
-        debug!("physical address for write: {}\n", physical_address);
-
         self.buffer
             .take()
             .map_or(Err(ErrorCode::RESERVE), |buffer| {
                 // Check that the internal buffer and the buffer that was
                 // allowed are long enough.
                 let active_len = cmp::min(length, buffer.len());
-                debug!("active length: {}\n", active_len);
 
                 // self.current_app.set(Some(processid));
                 match command {
@@ -317,7 +309,7 @@ impl<'a> AppLoader<'a> {
                         self.driver1.read(buffer, physical_address, active_len)
                     }
                     NonvolatileCommand::UserspaceWrite => {
-                        debug!("writing to flash\n");
+                        
                         self.driver1.write(buffer, physical_address, active_len)
                     }
                     _ => Err(ErrorCode::FAIL),
@@ -326,7 +318,7 @@ impl<'a> AppLoader<'a> {
     }
 
     fn check_queue(&self) {
-        // Check all of the apps.
+            // If the kernel is not requesting anything, check all of the apps.
             for cntr in self.apps.iter() {
                 let processid = cntr.processid();
                 let started_command = cntr.enter(|app, _| {
