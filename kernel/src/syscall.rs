@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-//! Tock syscall number definitions and arch-agnostic interface trait.
+//! Mechanisms for handling and defining system calls.
+//!
+//! This includes:
+//! - syscall class
+//! - error types
+//! - interface trait for context switches
 
 use core::convert::TryFrom;
 use core::fmt::Write;
@@ -78,13 +83,17 @@ impl TryFrom<u8> for SyscallClass {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Syscall {
     /// Structure representing an invocation of the Yield system call class.
-    /// `which` is the Yield identifier value and `address` is the no wait field.
+    ///
+    /// - `which`: the Yield identifier value
+    /// - `address`: the no wait field
     Yield { which: usize, address: *mut u8 },
 
-    /// Structure representing an invocation of the Subscribe system call
-    /// class. `driver_number` is the driver identifier, `subdriver_number`
-    /// is the subscribe identifier, `upcall_ptr` is upcall pointer,
-    /// and `appdata` is the application data.
+    /// Structure representing an invocation of the Subscribe system call class.
+    ///
+    /// - `driver_number`: the driver identifier
+    /// - `subdriver_number`: the subscribe identifier
+    /// - `upcall_ptr`: upcall pointer to the upcall function
+    /// - `appdata`: userspace application data
     Subscribe {
         driver_number: usize,
         subdriver_number: usize,
@@ -93,8 +102,11 @@ pub enum Syscall {
     },
 
     /// Structure representing an invocation of the Command system call class.
-    /// `driver_number` is the driver identifier and `subdriver_number` is
-    /// the command identifier.
+    ///
+    /// - `driver_number`: the driver identifier
+    /// - `subdriver_number`: the command identifier
+    /// - `arg0`: value passed to the `Command` implementation
+    /// - `arg1`: value passed to the `Command` implementation
     Command {
         driver_number: usize,
         subdriver_number: usize,
@@ -103,9 +115,12 @@ pub enum Syscall {
     },
 
     /// Structure representing an invocation of the ReadWriteAllow system call
-    /// class. `driver_number` is the driver identifier, `subdriver_number` is
-    /// the buffer identifier, `allow_address` is the address, and `allow_size`
-    /// is the size.
+    /// class.
+    ///
+    /// - `driver_number`: the driver identifier
+    /// - `subdriver_number`: the buffer identifier
+    /// - `allow_address`: the address where the buffer starts
+    /// - `allow_size`: the size of the buffer in bytes
     ReadWriteAllow {
         driver_number: usize,
         subdriver_number: usize,
@@ -114,9 +129,12 @@ pub enum Syscall {
     },
 
     /// Structure representing an invocation of the ReadWriteAllow system call
-    /// class, but with shared kernel and app access. `driver_number` is the
-    /// driver identifier, `subdriver_number` is the buffer identifier,
-    // `allow_address` is the address, and `allow_size` is the size.
+    /// class, but with shared kernel and app access.
+    ///
+    /// - `driver_number`: the driver identifier
+    /// - `subdriver_number`: the buffer identifier
+    /// - `allow_address`: the address where the buffer starts
+    /// - `allow_size`: the size of the buffer in bytes
     UserspaceReadableAllow {
         driver_number: usize,
         subdriver_number: usize,
@@ -125,9 +143,12 @@ pub enum Syscall {
     },
 
     /// Structure representing an invocation of the ReadOnlyAllow system call
-    /// class. `driver_number` is the driver identifier, `subdriver_number` is
-    /// the buffer identifier, `allow_address` is the address, and `allow_size`
-    /// is the size.
+    /// class.
+    ///
+    /// - `driver_number`: the driver identifier
+    /// - `subdriver_number`: the buffer identifier
+    /// - `allow_address`: the address where the buffer starts
+    /// - `allow_size`: the size of the buffer in bytes
     ReadOnlyAllow {
         driver_number: usize,
         subdriver_number: usize,
@@ -135,14 +156,16 @@ pub enum Syscall {
         allow_size: usize,
     },
 
-    /// Structure representing an invocation of the Memop system call
-    /// class. `operand` is the operation and `arg0` is the operation
-    /// argument.
+    /// Structure representing an invocation of the Memop system call class.
+    ///
+    /// - `operand`: the operation
+    /// - `arg0`: the operation argument
     Memop { operand: usize, arg0: usize },
 
-    /// Structure representing an invocation of the Exit system call
-    /// class. `which` is the exit identifier and `completion_code` is
-    /// the completion code passed into the kernel.
+    /// Structure representing an invocation of the Exit system call class.
+    ///
+    /// - `which`: the exit identifier
+    /// - `completion_code`: the completion code passed into the kernel
     Exit {
         which: usize,
         completion_code: usize,
@@ -249,7 +272,7 @@ pub enum SyscallReturnVariant {
 /// types
 /// (e.g. [`ReadWriteProcessBuffer`](crate::processbuffer::ReadWriteProcessBuffer)
 /// and `GrantKernelData`) or wrappers around this struct
-/// ([`CommandReturn`](crate::syscall_driver::CommandReturn)) which limit the
+/// ([`CommandReturn`]) which limit the
 /// available constructors to safely constructable variants.
 #[derive(Copy, Clone, Debug)]
 pub enum SyscallReturn {
@@ -353,55 +376,55 @@ impl SyscallReturn {
     /// the encoding specified in TRD104. Architectures which do not follow
     /// TRD104 are free to define their own encoding.
     pub fn encode_syscall_return(&self, a0: &mut u32, a1: &mut u32, a2: &mut u32, a3: &mut u32) {
-        match self {
-            &SyscallReturn::Failure(e) => {
+        match *self {
+            SyscallReturn::Failure(e) => {
                 *a0 = SyscallReturnVariant::Failure as u32;
                 *a1 = usize::from(e) as u32;
             }
-            &SyscallReturn::FailureU32(e, data0) => {
+            SyscallReturn::FailureU32(e, data0) => {
                 *a0 = SyscallReturnVariant::FailureU32 as u32;
                 *a1 = usize::from(e) as u32;
                 *a2 = data0;
             }
-            &SyscallReturn::FailureU32U32(e, data0, data1) => {
+            SyscallReturn::FailureU32U32(e, data0, data1) => {
                 *a0 = SyscallReturnVariant::FailureU32U32 as u32;
                 *a1 = usize::from(e) as u32;
                 *a2 = data0;
                 *a3 = data1;
             }
-            &SyscallReturn::FailureU64(e, data0) => {
+            SyscallReturn::FailureU64(e, data0) => {
                 let (data0_msb, data0_lsb) = u64_to_be_u32s(data0);
                 *a0 = SyscallReturnVariant::FailureU64 as u32;
                 *a1 = usize::from(e) as u32;
                 *a2 = data0_lsb;
                 *a3 = data0_msb;
             }
-            &SyscallReturn::Success => {
+            SyscallReturn::Success => {
                 *a0 = SyscallReturnVariant::Success as u32;
             }
-            &SyscallReturn::SuccessU32(data0) => {
+            SyscallReturn::SuccessU32(data0) => {
                 *a0 = SyscallReturnVariant::SuccessU32 as u32;
                 *a1 = data0;
             }
-            &SyscallReturn::SuccessU32U32(data0, data1) => {
+            SyscallReturn::SuccessU32U32(data0, data1) => {
                 *a0 = SyscallReturnVariant::SuccessU32U32 as u32;
                 *a1 = data0;
                 *a2 = data1;
             }
-            &SyscallReturn::SuccessU32U32U32(data0, data1, data2) => {
+            SyscallReturn::SuccessU32U32U32(data0, data1, data2) => {
                 *a0 = SyscallReturnVariant::SuccessU32U32U32 as u32;
                 *a1 = data0;
                 *a2 = data1;
                 *a3 = data2;
             }
-            &SyscallReturn::SuccessU64(data0) => {
+            SyscallReturn::SuccessU64(data0) => {
                 let (data0_msb, data0_lsb) = u64_to_be_u32s(data0);
 
                 *a0 = SyscallReturnVariant::SuccessU64 as u32;
                 *a1 = data0_lsb;
                 *a2 = data0_msb;
             }
-            &SyscallReturn::SuccessU32U64(data0, data1) => {
+            SyscallReturn::SuccessU32U64(data0, data1) => {
                 let (data1_msb, data1_lsb) = u64_to_be_u32s(data1);
 
                 *a0 = SyscallReturnVariant::SuccessU32U64 as u32;
@@ -409,45 +432,45 @@ impl SyscallReturn {
                 *a2 = data1_lsb;
                 *a3 = data1_msb;
             }
-            &SyscallReturn::AllowReadWriteSuccess(ptr, len) => {
+            SyscallReturn::AllowReadWriteSuccess(ptr, len) => {
                 *a0 = SyscallReturnVariant::SuccessU32U32 as u32;
                 *a1 = ptr as u32;
                 *a2 = len as u32;
             }
-            &SyscallReturn::UserspaceReadableAllowSuccess(ptr, len) => {
+            SyscallReturn::UserspaceReadableAllowSuccess(ptr, len) => {
                 *a0 = SyscallReturnVariant::SuccessU32U32 as u32;
                 *a1 = ptr as u32;
                 *a2 = len as u32;
             }
-            &SyscallReturn::AllowReadWriteFailure(err, ptr, len) => {
+            SyscallReturn::AllowReadWriteFailure(err, ptr, len) => {
                 *a0 = SyscallReturnVariant::FailureU32U32 as u32;
                 *a1 = usize::from(err) as u32;
                 *a2 = ptr as u32;
                 *a3 = len as u32;
             }
-            &SyscallReturn::UserspaceReadableAllowFailure(err, ptr, len) => {
+            SyscallReturn::UserspaceReadableAllowFailure(err, ptr, len) => {
                 *a0 = SyscallReturnVariant::FailureU32U32 as u32;
                 *a1 = usize::from(err) as u32;
                 *a2 = ptr as u32;
                 *a3 = len as u32;
             }
-            &SyscallReturn::AllowReadOnlySuccess(ptr, len) => {
+            SyscallReturn::AllowReadOnlySuccess(ptr, len) => {
                 *a0 = SyscallReturnVariant::SuccessU32U32 as u32;
                 *a1 = ptr as u32;
                 *a2 = len as u32;
             }
-            &SyscallReturn::AllowReadOnlyFailure(err, ptr, len) => {
+            SyscallReturn::AllowReadOnlyFailure(err, ptr, len) => {
                 *a0 = SyscallReturnVariant::FailureU32U32 as u32;
                 *a1 = usize::from(err) as u32;
                 *a2 = ptr as u32;
                 *a3 = len as u32;
             }
-            &SyscallReturn::SubscribeSuccess(ptr, data) => {
+            SyscallReturn::SubscribeSuccess(ptr, data) => {
                 *a0 = SyscallReturnVariant::SuccessU32U32 as u32;
                 *a1 = ptr as u32;
                 *a2 = data as u32;
             }
-            &SyscallReturn::SubscribeFailure(err, ptr, data) => {
+            SyscallReturn::SubscribeFailure(err, ptr, data) => {
                 *a0 = SyscallReturnVariant::FailureU32U32 as u32;
                 *a1 = usize::from(err) as u32;
                 *a2 = ptr as u32;

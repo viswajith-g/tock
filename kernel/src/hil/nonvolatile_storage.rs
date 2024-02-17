@@ -4,7 +4,7 @@
 
 //! Generic interface for nonvolatile memory.
 
-use crate::errorcode::ErrorCode;
+use crate::errorcode::ErrorCode; 
 
 /// Simple interface for reading and writing nonvolatile memory. It is expected
 /// that drivers for nonvolatile memory would implement this trait.
