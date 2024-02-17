@@ -840,7 +840,6 @@ pub unsafe fn main() {
 
     nrf52_components::NrfClockComponent::new(&base_peripherals.clock).finalize(());
 
-
     //--------------------------------------------------------------------------
     // TESTS
     //--------------------------------------------------------------------------
@@ -930,10 +929,6 @@ pub unsafe fn main() {
         )
     );
 
-    //--------------------------------------------------------------------------
-    // Dynamic App Load (OTA)
-    //--------------------------------------------------------------------------
-
     let dynamic_app_loader = components::app_loader::AppLoaderComponent::new(
             board_kernel,
             capsules_extra::app_loader::DRIVER_NUM,
@@ -944,17 +939,7 @@ pub unsafe fn main() {
             nrf52840::nvmc::Nvmc 
         ));
     
-    // let dynamic_app_buffer = static_init!([u8; capsules_extra::app_loader::BUF_LEN],[0;capsules_extra::app_loader::BUF_LEN]);
-    // let dynamic_app_loader = static_init!(
-    //     capsules_extra::app_loader::AppLoader<'static>, 
-    //     capsules_extra::app_loader::AppLoader::new(
-    //         nv_to_page,
-    //         dynamic_process_loader,
-    //         board_kernel.create_grant(
-    //             capsules_extra::app_loader::DRIVER_NUM, &memory_allocation_capability),
-    //         dynamic_app_buffer,
-    //     )
-    // );
+    // debug!("Created a dynamic_app_loader instance");
 
     //--------------------------------------------------------------------------
     // PLATFORM SETUP, SCHEDULER, AND START KERNEL LOOP
