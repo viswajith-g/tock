@@ -67,8 +67,8 @@ pub const TX_BUF_LEN: usize = PAGE_SIZE as usize + 4;
 pub const RX_BUF_LEN: usize = PAGE_SIZE as usize + 4;
 
 const SPI_SPEED: u32 = 8000000;
-const SECTOR_SIZE: u32 = 4096;
-const PAGE_SIZE: u32 = 256;
+pub const SECTOR_SIZE: u32 = 4096;
+pub const PAGE_SIZE: u32 = 256;
 
 /// This is a wrapper around a u8 array that is sized to a single page for the
 /// MX25R6435F. The page size is 4k because that is the smallest size that can
@@ -85,9 +85,7 @@ pub struct Mx25r6435fSector(pub [u8; SECTOR_SIZE as usize]);
 
 impl Mx25r6435fSector {
     pub const fn new() -> Self {
-        Self {
-            0: [0; SECTOR_SIZE as usize],
-        }
+        Self([0; SECTOR_SIZE as usize])
     }
 }
 
@@ -406,7 +404,7 @@ impl<
                             self.rxbuffer.replace(read_buffer);
 
                             self.client.map(move |client| {
-                                client.read_complete(sector, hil::flash::Error::CommandComplete);
+                                client.read_complete(sector, Ok(()));
                             });
                         } else {
                             let address =
@@ -482,7 +480,7 @@ impl<
                 self.state.set(State::Idle);
                 self.txbuffer.replace(write_buffer);
                 self.client.map(|client| {
-                    client.erase_complete(hil::flash::Error::CommandComplete);
+                    client.erase_complete(Ok(()));
                 });
             }
             State::WriteSectorWriteEnable {
@@ -497,7 +495,7 @@ impl<
                     self.txbuffer.replace(write_buffer);
                     self.client.map(|client| {
                         self.client_sector.take().map(|sector| {
-                            client.write_complete(sector, hil::flash::Error::CommandComplete);
+                            client.write_complete(sector, Ok(()));
                         });
                     });
                 } else {

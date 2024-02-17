@@ -54,10 +54,24 @@ pub const DRIVER_NUM: usize = driver::NUM::Console as usize;
 
 /// Default size for the read and write buffers used by the console.
 /// Boards may pass different-size buffers if needed.
-pub const DEFAULT_BUF_SIZE: usize = 64;
+// pub const DEFAULT_BUF_SIZE: usize = 64;
+pub const DEFAULT_BUF_SIZE: usize = 517;
+
+/// IDs for subscribed upcalls.
+mod upcall {
+    /// Write buffer completed callback
+    pub const WRITE_DONE: usize = 1;
+    /// Read buffer completed callback
+    pub const READ_DONE: usize = 2;
+    /// Number of upcalls. Even though we only use two, indexing starts at 0 so
+    /// to be able to use indices 1 and 2 we need to specify three upcalls.
+    pub const COUNT: u8 = 3;
+}
 
 /// Ids for read-only allow buffers
 mod ro_allow {
+    /// Readonly buffer for write buffer
+    ///
     /// Before the allow syscall was handled by the kernel,
     /// console used allow number "1", so to preserve compatibility
     /// we still use allow number 1 now.
@@ -68,6 +82,8 @@ mod ro_allow {
 
 /// Ids for read-write allow buffers
 mod rw_allow {
+    /// Writeable buffer for read buffer
+    ///
     /// Before the allow syscall was handled by the kernel,
     /// console used allow number "1", so to preserve compatibility
     /// we still use allow number 1 now.
@@ -88,7 +104,7 @@ pub struct Console<'a> {
     uart: &'a dyn uart::UartData<'a>,
     apps: Grant<
         App,
-        UpcallCount<3>,
+        UpcallCount<{ upcall::COUNT }>,
         AllowRoCount<{ ro_allow::COUNT }>,
         AllowRwCount<{ rw_allow::COUNT }>,
     >,
@@ -105,7 +121,7 @@ impl<'a> Console<'a> {
         rx_buffer: &'static mut [u8],
         grant: Grant<
             App,
-            UpcallCount<3>,
+            UpcallCount<{ upcall::COUNT }>,
             AllowRoCount<{ ro_allow::COUNT }>,
             AllowRwCount<{ rw_allow::COUNT }>,
         >,
@@ -225,40 +241,26 @@ impl<'a> Console<'a> {
         } else {
             // Note: We have ensured above that rx_buffer is present
             app.read_len = read_len;
-            self.rx_buffer.take().map(|buffer| {
-                self.rx_in_progress.set(processid);
-                let _ = self.uart.receive_buffer(buffer, app.read_len);
-            });
-            Ok(())
+            self.rx_buffer
+                .take()
+                .map_or(Err(ErrorCode::INVAL), |buffer| {
+                    self.rx_in_progress.set(processid);
+                    if let Err((e, buf)) = self.uart.receive_buffer(buffer, app.read_len) {
+                        self.rx_buffer.replace(buf);
+                        return Err(e);
+                    }
+                    Ok(())
+                })
         }
     }
 }
 
 impl SyscallDriver for Console<'_> {
-    /// Setup shared buffers.
-    ///
-    /// ### `allow_num`
-    ///
-    /// - `1`: Writeable buffer for read buffer
-
-    /// Setup shared buffers.
-    ///
-    /// ### `allow_num`
-    ///
-    /// - `1`: Readonly buffer for write buffer
-
-    // Setup callbacks.
-    //
-    // ### `subscribe_num`
-    //
-    // - `1`: Write buffer completed callback
-    // - `2`: Read buffer completed callback
-
     /// Initiate serial transfers
     ///
     /// ### `command_num`
     ///
-    /// - `0`: Driver check.
+    /// - `0`: Driver existence check.
     /// - `1`: Transmits a buffer passed via `allow`, up to the length
     ///        passed in `arg1`
     /// - `2`: Receives into a buffer passed via `allow`, up to the length
@@ -328,7 +330,9 @@ impl uart::TransmitClient for Console<'_> {
                         // Go ahead and signal the application
                         let written = app.write_len;
                         app.write_len = 0;
-                        kernel_data.schedule_upcall(1, (written, 0, 0)).ok();
+                        kernel_data
+                            .schedule_upcall(upcall::WRITE_DONE, (written, 0, 0))
+                            .ok();
                     }
                 }
             })
@@ -380,7 +384,7 @@ impl uart::ReceiveClient for Console<'_> {
                                         read.mut_enter(|data| {
                                             let mut c = 0;
                                             for (a, b) in data.iter().zip(rx_buffer) {
-                                                c = c + 1;
+                                                c += 1;
                                                 a.set(*b);
                                             }
                                             c
@@ -426,7 +430,7 @@ impl uart::ReceiveClient for Console<'_> {
 
                                 kernel_data
                                     .schedule_upcall(
-                                        2,
+                                        upcall::READ_DONE,
                                         (
                                             kernel::errorcode::into_statuscode(ret),
                                             received_length,
@@ -439,7 +443,7 @@ impl uart::ReceiveClient for Console<'_> {
                                 // Some UART error occurred
                                 kernel_data
                                     .schedule_upcall(
-                                        2,
+                                        upcall::READ_DONE,
                                         (
                                             kernel::errorcode::into_statuscode(Err(
                                                 ErrorCode::FAIL,

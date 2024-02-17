@@ -6,6 +6,7 @@
 
 use core::fmt;
 use core::fmt::Write;
+use core::num::NonZeroU32;
 use core::ptr::NonNull;
 use core::str;
 
@@ -179,6 +180,21 @@ impl ProcessId {
         self.identifier
     }
 
+    /// Get the `ShortID` for this application this process is an execution of.
+    ///
+    /// The `ShortID` is an identifier for the _application_, not the particular
+    /// execution (i.e. the currently running process). This makes `ShortID`
+    /// distinct from `ProcessId`.
+    ///
+    /// This function is a helper function as capsules typically use `ProcessId`
+    /// as a handle to the running process and corresponding app.
+    pub fn short_app_id(&self) -> ShortID {
+        self.kernel
+            .process_map_or(ShortID::LocallyUnique, *self, |process| {
+                process.short_app_id()
+            })
+    }
+
     /// Returns the full address of the start and end of the flash region that
     /// the app owns and can write to. This includes the app's code and data and
     /// any padding at the end of the app. It does not include the TBF header,
@@ -244,6 +260,45 @@ impl PartialEq for ShortID {
 }
 impl Eq for ShortID {}
 
+/// Enum used to inform scheduler why a process stopped executing (aka why
+/// `do_process()` returned).
+///
+/// This is publicly exported to allow for schedulers implemented outside of the
+/// kernel crate.
+#[derive(PartialEq, Eq)]
+pub enum StoppedExecutingReason {
+    /// The process returned because it is no longer ready to run.
+    NoWorkLeft,
+
+    /// The process faulted, and the board restart policy was configured such
+    /// that it was not restarted and there was not a kernel panic.
+    StoppedFaulted,
+
+    /// The kernel stopped the process.
+    Stopped,
+
+    /// The process was preempted because its timeslice expired.
+    TimesliceExpired,
+
+    /// The process returned because it was preempted by the kernel. This can
+    /// mean that kernel work became ready (most likely because an interrupt
+    /// fired and the kernel thread needs to execute the bottom half of the
+    /// interrupt), or because the scheduler no longer wants to execute that
+    /// process.
+    KernelPreemption,
+}
+
+/// The version of a binary.
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct BinaryVersion(NonZeroU32);
+
+impl BinaryVersion {
+    /// Creates a new binary version.
+    pub fn new(value: NonZeroU32) -> Self {
+        Self(value)
+    }
+}
+
 /// This trait represents a generic process that the Tock scheduler can
 /// schedule.
 pub trait Process {
@@ -255,9 +310,8 @@ pub trait Process {
     fn short_app_id(&self) -> ShortID;
 
     /// Returns the version number of the binary in this process, as specified
-    /// in a TBF Program Header; if the Userspace Binary only has a TBF Main
-    /// Header, returns 0.
-    fn binary_version(&self) -> u32;
+    /// in a TBF Program Header; if the binary has no version assigned, return [None]
+    fn binary_version(&self) -> Option<BinaryVersion>;
 
     /// Queue a `Task` for the process. This will be added to a per-process
     /// buffer and executed by the scheduler. `Task`s are some function the app
@@ -573,7 +627,7 @@ pub trait Process {
     /// app_brk, as MPU alignment and size constraints may result in the MPU
     /// enforced region differing from the app_brk.
     ///
-    /// This will return `false` and fail if:
+    /// This will return `Err(())` and fail if:
     /// - The process is inactive, or
     /// - There is not enough available memory to do the allocation, or
     /// - The grant_num is invalid, or
@@ -584,7 +638,7 @@ pub trait Process {
         driver_num: usize,
         size: usize,
         align: usize,
-    ) -> bool;
+    ) -> Result<(), ()>;
 
     /// Check if a given grant for this process has been allocated.
     ///
@@ -597,14 +651,14 @@ pub trait Process {
     /// are not recorded in the grant pointer array, but are useful for capsules
     /// which need additional process-specific dynamically allocated memory.
     ///
-    /// If successful, return a Some() with an identifier that can be used with
+    /// If successful, return a Ok() with an identifier that can be used with
     /// `enter_custom_grant()` to get access to the memory and the pointer to
     /// the memory which must be used to initialize the memory.
     fn allocate_custom_grant(
         &self,
         size: usize,
         align: usize,
-    ) -> Option<(ProcessCustomGrantIdentifier, NonNull<u8>)>;
+    ) -> Result<(ProcessCustomGrantIdentifier, NonNull<u8>), ()>;
 
     /// Enter the grant based on `grant_num` for this process.
     ///

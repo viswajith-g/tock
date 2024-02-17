@@ -140,6 +140,7 @@ impl<'a, S: SpiMasterDevice<'a>> Spi<'a, S> {
 }
 
 impl<'a, S: SpiMasterDevice<'a>> SyscallDriver for Spi<'a, S> {
+    // 0: driver existence check
     // 2: read/write buffers
     //   - requires write buffer registered with allow
     //   - read buffer optional
@@ -184,14 +185,14 @@ impl<'a, S: SpiMasterDevice<'a>> SyscallDriver for Spi<'a, S> {
         process_id: ProcessId,
     ) -> CommandReturn {
         if command_num == 0 {
-            // Handle this first as it should be returned unconditionally.
+            // Handle unconditional driver existence check.
             return CommandReturn::success();
         }
 
         // Check if this driver is free, or already dedicated to this process.
         let match_or_empty_or_nonexistant = self.current_process.map_or(true, |current_process| {
             self.grants
-                .enter(*current_process, |_, _| current_process == &process_id)
+                .enter(current_process, |_, _| current_process == process_id)
                 .unwrap_or(true)
         });
         if match_or_empty_or_nonexistant {
@@ -257,12 +258,12 @@ impl<'a, S: SpiMasterDevice<'a>> SyscallDriver for Spi<'a, S> {
                 // set baud rate
                 match self.spi_master.set_rate(arg1 as u32) {
                     Ok(()) => CommandReturn::success(),
-                    Err(error) => CommandReturn::failure(error.into()),
+                    Err(error) => CommandReturn::failure(error),
                 }
             }
             6 => {
                 // get baud rate
-                CommandReturn::success_u32(self.spi_master.get_rate() as u32)
+                CommandReturn::success_u32(self.spi_master.get_rate())
             }
             7 => {
                 // set phase
@@ -271,7 +272,7 @@ impl<'a, S: SpiMasterDevice<'a>> SyscallDriver for Spi<'a, S> {
                     _ => self.spi_master.set_phase(ClockPhase::SampleTrailing),
                 } {
                     Ok(()) => CommandReturn::success(),
-                    Err(error) => CommandReturn::failure(error.into()),
+                    Err(error) => CommandReturn::failure(error),
                 }
             }
             8 => {
@@ -285,7 +286,7 @@ impl<'a, S: SpiMasterDevice<'a>> SyscallDriver for Spi<'a, S> {
                     _ => self.spi_master.set_polarity(ClockPolarity::IdleHigh),
                 } {
                     Ok(()) => CommandReturn::success(),
-                    Err(error) => CommandReturn::failure(error.into()),
+                    Err(error) => CommandReturn::failure(error),
                 }
             }
             10 => {
@@ -310,7 +311,7 @@ impl<'a, S: SpiMasterDevice<'a>> SpiMasterClient for Spi<'a, S> {
         _status: Result<(), ErrorCode>,
     ) {
         self.current_process.map(|process_id| {
-            let _ = self.grants.enter(*process_id, move |app, kernel_data| {
+            let _ = self.grants.enter(process_id, move |app, kernel_data| {
                 let rbuf = readbuf.map(|src| {
                     let index = app.index;
                     let _ = kernel_data

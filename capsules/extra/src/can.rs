@@ -113,18 +113,10 @@ pub struct CanCapsule<'a, Can: can::Can> {
     peripheral_state: OptionalCell<can::State>,
 }
 
+#[derive(Default)]
 pub struct App {
     receive_index: usize,
     lost_messages: u32,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        App {
-            receive_index: 0,
-            lost_messages: 0,
-        }
-    }
 }
 
 impl<'a, Can: can::Can> CanCapsule<'a, Can> {
@@ -151,7 +143,7 @@ impl<'a, Can: can::Can> CanCapsule<'a, Can> {
 
     fn schedule_callback(&self, callback_number: usize, data: (usize, usize, usize)) {
         self.processid.map(|processid| {
-            let _ = self.processes.enter(*processid, |_app, kernel_data| {
+            let _ = self.processes.enter(processid, |_app, kernel_data| {
                 kernel_data
                     .schedule_upcall(callback_number, (data.0, data.1, data.2))
                     .ok();
@@ -163,12 +155,12 @@ impl<'a, Can: can::Can> CanCapsule<'a, Can> {
     /// to the low-level hardware, in order for it to be sent on the bus.
     pub fn process_send_command(
         &self,
-        processid: &mut ProcessId,
+        processid: ProcessId,
         id: can::Id,
         length: usize,
     ) -> Result<(), ErrorCode> {
         self.processes
-            .enter(*processid, |_, kernel_data| {
+            .enter(processid, |_, kernel_data| {
                 kernel_data
                     .get_readonly_processbuffer(ro_allow::RO_ALLOW_BUFFER)
                     .map_or_else(
@@ -183,7 +175,7 @@ impl<'a, Can: can::Can> CanCapsule<'a, Can> {
                                                 dest_buffer[i] = buffer[i].get();
                                             }
                                             match self.can.send(id, dest_buffer, length) {
-                                                Ok(_) => Ok(()),
+                                                Ok(()) => Ok(()),
                                                 Err((err, buf)) => {
                                                     self.can_tx.replace(buf);
                                                     Err(err)
@@ -202,7 +194,7 @@ impl<'a, Can: can::Can> CanCapsule<'a, Can> {
     pub fn is_valid_process(&self, processid: ProcessId) -> bool {
         self.processid.map_or(true, |owning_process| {
             self.processes
-                .enter(*owning_process, |_, _| owning_process == &processid)
+                .enter(owning_process, |_, _| owning_process == processid)
                 .unwrap_or(true)
         })
     }
@@ -233,7 +225,7 @@ impl<'a, Can: can::Can> SyscallDriver for CanCapsule<'a, Can> {
         match command_num {
             // Set the bitrate
             1 => match self.can.set_bitrate(arg1 as u32) {
-                Ok(_) => CommandReturn::success(),
+                Ok(()) => CommandReturn::success(),
                 Err(err) => CommandReturn::failure(err),
             },
 
@@ -245,20 +237,20 @@ impl<'a, Can: can::Can> SyscallDriver for CanCapsule<'a, Can> {
                     2 => can::OperationMode::Freeze,
                     _ => can::OperationMode::Normal,
                 }) {
-                    Ok(_) => CommandReturn::success(),
+                    Ok(()) => CommandReturn::success(),
                     Err(err) => CommandReturn::failure(err),
                 }
             }
 
             // Enable the peripheral
             3 => match self.can.enable() {
-                Ok(_) => CommandReturn::success(),
+                Ok(()) => CommandReturn::success(),
                 Err(err) => CommandReturn::failure(err),
             },
 
             // Disable the peripheral
             4 => match self.can.disable() {
-                Ok(_) => CommandReturn::success(),
+                Ok(()) => CommandReturn::success(),
                 Err(err) => CommandReturn::failure(err),
             },
 
@@ -269,7 +261,7 @@ impl<'a, Can: can::Can> SyscallDriver for CanCapsule<'a, Can> {
                     .map_or(
                         CommandReturn::failure(ErrorCode::BUSY),
                         |processid| match self.process_send_command(processid, id, arg2) {
-                            Ok(_) => CommandReturn::success(),
+                            Ok(()) => CommandReturn::success(),
                             Err(err) => CommandReturn::failure(err),
                         },
                     )
@@ -282,7 +274,7 @@ impl<'a, Can: can::Can> SyscallDriver for CanCapsule<'a, Can> {
                     .map_or(
                         CommandReturn::failure(ErrorCode::BUSY),
                         |processid| match self.process_send_command(processid, id, arg2) {
-                            Ok(_) => CommandReturn::success(),
+                            Ok(()) => CommandReturn::success(),
                             Err(err) => CommandReturn::failure(err),
                         },
                     )
@@ -292,7 +284,7 @@ impl<'a, Can: can::Can> SyscallDriver for CanCapsule<'a, Can> {
             7 => {
                 self.can_rx
                     .take()
-                    .map(|dest_buffer| {
+                    .map_or(CommandReturn::failure(ErrorCode::NOMEM), |dest_buffer| {
                         self.processes
                             .enter(processid, |_, kernel| {
                                 match kernel.get_readwrite_processbuffer(0).map_or_else(
@@ -314,21 +306,20 @@ impl<'a, Can: can::Can> SyscallDriver for CanCapsule<'a, Can> {
                                             .unwrap_or_else(|err| err.into())
                                     },
                                 ) {
-                                    Ok(_) => match self.can.start_receive_process(dest_buffer) {
-                                        Ok(_) => CommandReturn::success(),
+                                    Ok(()) => match self.can.start_receive_process(dest_buffer) {
+                                        Ok(()) => CommandReturn::success(),
                                         Err((err, _)) => CommandReturn::failure(err),
                                     },
-                                    Err(err) => CommandReturn::failure(err.into()),
+                                    Err(err) => CommandReturn::failure(err),
                                 }
                             })
                             .unwrap_or_else(|err| err.into())
                     })
-                    .unwrap_or(CommandReturn::failure(ErrorCode::NOMEM))
             }
 
             // Stop receiving messages
             8 => match self.can.stop_receive() {
-                Ok(_) => CommandReturn::success(),
+                Ok(()) => CommandReturn::success(),
                 Err(err) => CommandReturn::failure(err),
             },
 
@@ -341,7 +332,7 @@ impl<'a, Can: can::Can> SyscallDriver for CanCapsule<'a, Can> {
                     sync_jump_width: ((arg1 & BYTE2_MASK) >> 8) as u32,
                     baud_rate_prescaler: (arg1 & BYTE1_MASK) as u32,
                 }) {
-                    Ok(_) => CommandReturn::success(),
+                    Ok(()) => CommandReturn::success(),
                     Err(err) => CommandReturn::failure(err),
                 }
             }
@@ -369,7 +360,7 @@ impl<'a, Can: can::Can> can::ControllerClient for CanCapsule<'a, Can> {
     // error callback.
     fn enabled(&self, status: Result<(), ErrorCode>) {
         match status {
-            Ok(_) => match self.peripheral_state.take() {
+            Ok(()) => match self.peripheral_state.take() {
                 Some(can::State::Running) => {
                     self.schedule_callback(up_calls::UPCALL_ENABLE, (0, 0, 0));
                 }
@@ -397,7 +388,7 @@ impl<'a, Can: can::Can> can::ControllerClient for CanCapsule<'a, Can> {
     // error callback.
     fn disabled(&self, status: Result<(), ErrorCode>) {
         match status {
-            Ok(_) => match self.peripheral_state.take() {
+            Ok(()) => match self.peripheral_state.take() {
                 Some(can::State::Disabled) => {
                     self.schedule_callback(up_calls::UPCALL_DISABLE, (0, 0, 0));
                 }
@@ -458,10 +449,10 @@ impl<'a, Can: can::Can> can::ReceiveClient<{ can::STANDARD_CAN_PACKET_SIZE }>
         let mut new_buffer = false;
         let mut shared_len = 0;
         match status {
-            Ok(_) => {
+            Ok(()) => {
                 match self.processid.map_or(Err(ErrorCode::NOMEM), |processid| {
                     self.processes
-                        .enter(*processid, |app_data, kernel_data| {
+                        .enter(processid, |app_data, kernel_data| {
                             kernel_data
                                 .get_readwrite_processbuffer(rw_allow::RW_ALLOW_BUFFER)
                                 .map_or_else(
@@ -489,16 +480,14 @@ impl<'a, Can: can::Can> can::ReceiveClient<{ can::STANDARD_CAN_PACKET_SIZE }>
                                                     .copy_from_slice(&(contor + 1).to_le_bytes());
                                                 if app_data.receive_index + len > user_buffer.len()
                                                 {
-                                                    app_data.lost_messages =
-                                                        app_data.lost_messages + 1;
+                                                    app_data.lost_messages += 1;
                                                     Err(ErrorCode::SIZE)
                                                 } else {
                                                     let r = user_buffer[app_data.receive_index
                                                         ..app_data.receive_index + len]
                                                         .copy_from_slice_or_err(&buffer[0..len]);
                                                     if r.is_ok() {
-                                                        app_data.receive_index =
-                                                            app_data.receive_index + len;
+                                                        app_data.receive_index += len;
                                                     }
                                                     r
                                                 }
@@ -513,13 +502,13 @@ impl<'a, Can: can::Can> can::ReceiveClient<{ can::STANDARD_CAN_PACKET_SIZE }>
                         up_calls::UPCALL_TRANSMISSION_ERROR,
                         (error_upcalls::ERROR_RX, err as usize, 0),
                     ),
-                    Ok(_) => {
+                    Ok(()) => {
                         if new_buffer {
                             self.schedule_callback(
                                 up_calls::UPCALL_MESSAGE_RECEIVED,
                                 (
                                     0,
-                                    shared_len as usize,
+                                    shared_len,
                                     match id {
                                         can::Id::Standard(u16) => u16 as usize,
                                         can::Id::Extended(u32) => u32 as usize,
