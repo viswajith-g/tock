@@ -10,17 +10,15 @@
 //! Usage
 //! -----
 //! ```rust
-//! let nonvolatile_storage = components::nonvolatile_storage::NonvolatileStorageComponent::new(
-//!     board_kernel,
-//!     &sam4l::flashcalw::FLASH_CONTROLLER,
-//!     0x60000,
-//!     0x20000,
-//!     &_sstorage as *const u8 as usize,
-//!     &_estorage as *const u8 as usize,
-//! )
-//! .finalize(components::nonvolatile_storage_component_static!(
-//!     sam4l::flashcalw::FLASHCALW
-//! ));
+//! let dynamic_app_loader = components::app_loader::AppLoaderComponent::new(
+//!    board_kernel,
+//!    capsules_extra::app_loader::DRIVER_NUM,
+//!    &base_peripherals.nvmc,
+//!    dynamic_process_loader,
+//!    )
+//!    .finalize(components::app_loader_component_static!(
+//!     nrf52840::nvmc::Nvmc 
+//!     ));
 //! ```
 
 use capsules_extra::app_loader::AppLoader;
