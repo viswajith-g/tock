@@ -302,8 +302,9 @@ pub struct DeviceState {
     pub endpoint_states: [EndpointState; N_ENDPOINTS],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum EndpointState {
+    #[default]
     Disabled,
     Ctrl(CtrlState),
     BulkIn(BulkInState),
@@ -331,12 +332,6 @@ pub enum BulkInState {
 pub enum BulkOutState {
     Init,
     Delay,
-}
-
-impl Default for EndpointState {
-    fn default() -> Self {
-        EndpointState::Disabled
-    }
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -525,7 +520,9 @@ impl<'a> Usbc<'a> {
                 usbc_regs().usbcon.modify(Control::USBE::SET);
 
                 // Set the pointer to the endpoint descriptors
-                usbc_regs().udesc.set(&self.descriptors as *const _ as u32);
+                usbc_regs()
+                    .udesc
+                    .set(core::ptr::addr_of!(self.descriptors) as u32);
 
                 // Clear pending device global interrupts
                 usbc_regs().udintclr.write(
@@ -1401,7 +1398,7 @@ impl<'a> Usbc<'a> {
                  \n     {:?}\
                  \n     {:?}\
                  \n     {:?}",
-                bi, // (&b.addr as *const _), b.addr.get(),
+                bi, // core::ptr::addr_of!(b.addr), b.addr.get(),
                 b.packet_size.get(),
                 b.control_status.get(),
                 _buf.map(HexBuf)

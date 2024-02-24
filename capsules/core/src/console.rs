@@ -68,6 +68,17 @@ mod upcall {
     pub const COUNT: u8 = 3;
 }
 
+/// IDs for subscribed upcalls.
+mod upcall {
+    /// Write buffer completed callback
+    pub const WRITE_DONE: usize = 1;
+    /// Read buffer completed callback
+    pub const READ_DONE: usize = 2;
+    /// Number of upcalls. Even though we only use two, indexing starts at 0 so
+    /// to be able to use indices 1 and 2 we need to specify three upcalls.
+    pub const COUNT: u8 = 3;
+}
+
 /// Ids for read-only allow buffers
 mod ro_allow {
     /// Readonly buffer for write buffer

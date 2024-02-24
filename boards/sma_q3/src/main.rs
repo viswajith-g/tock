@@ -30,7 +30,6 @@ use kernel::scheduler::round_robin::RoundRobinSched;
 use kernel::{capabilities, create_capability, debug, debug_gpio, debug_verbose, static_init};
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
-use nrf52_components;
 
 // The backlight LED
 const LED1_PIN: Pin = Pin::P0_08;
@@ -45,9 +44,11 @@ const BUTTON_PIN: Pin = Pin::P0_17;
 const I2C_TEMP_SDA_PIN: Pin = Pin::P1_15;
 const I2C_TEMP_SCL_PIN: Pin = Pin::P0_02;
 
-// Constants related to the configuration of the 15.4 network stack
+// Constants related to the configuration of the 15.4 network stack; DEFAULT_EXT_SRC_MAC
+// should be replaced by an extended src address generated from device serial number
 const SRC_MAC: u16 = 0xf00f;
 const PAN_ID: u16 = 0xABCD;
+const DEFAULT_EXT_SRC_MAC: [u8; 8] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
 
 /// UART Writer
 pub mod io;
@@ -72,19 +73,15 @@ static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText>
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
 
-// Function for the process console to use to reboot the board
-fn reset() -> ! {
-    unsafe {
-        cortexm4::scb::reset();
-    }
-    loop {
-        cortexm4::support::nop();
-    }
-}
+type Bmp280Sensor = components::bmp280::Bmp280ComponentType<
+    VirtualMuxAlarm<'static, nrf52840::rtc::Rtc<'static>>,
+    capsules_core::virtualizers::virtual_i2c::I2CDevice<'static, nrf52840::i2c::TWI<'static>>,
+>;
+type TemperatureDriver = components::temperature::TemperatureComponentType<Bmp280Sensor>;
 
 /// Supported drivers by the platform
 pub struct Platform {
-    temperature: &'static capsules_extra::temperature::TemperatureSensor<'static>,
+    temperature: &'static TemperatureDriver,
     ble_radio: &'static capsules_extra::ble_advertising_driver::BLE<
         'static,
         nrf52840::ble_radio::Radio<'static>,
@@ -157,7 +154,7 @@ impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'
     type ContextSwitchCallback = ();
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
-        &self
+        self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
         &()
@@ -187,10 +184,14 @@ impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'
 /// these static_inits is wasted.
 #[inline(never)]
 unsafe fn create_peripherals() -> &'static mut Nrf52840DefaultPeripherals<'static> {
+    let ieee802154_ack_buf = static_init!(
+        [u8; nrf52840::ieee802154_radio::ACK_BUF_SIZE],
+        [0; nrf52840::ieee802154_radio::ACK_BUF_SIZE]
+    );
     // Initialize chip peripheral drivers
     let nrf52840_peripherals = static_init!(
         Nrf52840DefaultPeripherals,
-        Nrf52840DefaultPeripherals::new()
+        Nrf52840DefaultPeripherals::new(ieee802154_ack_buf)
     );
 
     nrf52840_peripherals
@@ -294,7 +295,7 @@ pub unsafe fn main() {
         // TODO: This is inherently unsafe as it aliases the mutable reference to rtt_memory. This
         // aliases reference is only used inside a panic handler, which should be OK, but maybe we
         // should use a const reference to rtt_memory and leverage interior mutability instead.
-        self::io::set_rtt_memory(&mut *rtt_memory.get_rtt_memory_ptr());
+        self::io::set_rtt_memory(&*rtt_memory.get_rtt_memory_ptr());
 
         components::segger_rtt::SeggerRttComponent::new(mux_alarm, rtt_memory)
             .finalize(components::segger_rtt_component_static!(nrf52840::rtc::Rtc))
@@ -309,7 +310,7 @@ pub unsafe fn main() {
         uart_mux,
         mux_alarm,
         process_printer,
-        Some(reset),
+        Some(cortexm4::support::reset),
     )
     .finalize(components::process_console_component_static!(
         nrf52840::rtc::Rtc<'static>
@@ -347,10 +348,11 @@ pub unsafe fn main() {
     let (ieee802154_radio, _mux_mac) = components::ieee802154::Ieee802154Component::new(
         board_kernel,
         capsules_extra::ieee802154::DRIVER_NUM,
-        &base_peripherals.ieee802154_radio,
+        &nrf52840_peripherals.ieee802154_radio,
         aes_mux,
         PAN_ID,
         SRC_MAC,
+        DEFAULT_EXT_SRC_MAC,
     )
     .finalize(components::ieee802154_component_static!(
         nrf52840::ieee802154_radio::Radio,
@@ -364,7 +366,9 @@ pub unsafe fn main() {
         capsules_extra::temperature::DRIVER_NUM,
         &base_peripherals.temp,
     )
-    .finalize(components::temperature_component_static!());
+    .finalize(components::temperature_component_static!(
+        nrf52840::temperature::Temp
+    ));
 
     let sensors_i2c_bus = static_init!(
         capsules_core::virtualizers::virtual_i2c::MuxI2C<'static, nrf52840::i2c::TWI>,
@@ -393,7 +397,7 @@ pub unsafe fn main() {
         capsules_extra::temperature::DRIVER_NUM,
         bmp280,
     )
-    .finalize(components::temperature_component_static!());
+    .finalize(components::temperature_component_static!(Bmp280Sensor));
 
     let rng = components::rng::RngComponent::new(
         board_kernel,
@@ -470,12 +474,12 @@ pub unsafe fn main() {
                 board_kernel,
                 chip,
                 core::slice::from_raw_parts(
-                    &_sapps as *const u8,
-                    &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+                    core::ptr::addr_of!(_sapps),
+                    core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
                 ),
                 core::slice::from_raw_parts_mut(
-                    &mut _sappmem as *mut u8,
-                    &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+                    core::ptr::addr_of_mut!(_sappmem),
+                    core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
                 ),
                 &mut PROCESSES,
                 &FAULT_RESPONSE,

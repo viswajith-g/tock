@@ -4,29 +4,39 @@
 
 //! High-level setup and interrupt mapping for the chip.
 
-use core::fmt::Write;
-use kernel;
+use core::fmt::{Display, Write};
+use core::marker::PhantomData;
 use kernel::platform::chip::{Chip, InterruptService};
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use rv32i::csr::{mcause, mie::mie, mtvec::mtvec, CSR};
-use rv32i::epmp::PMP;
+use rv32i::pmp::{PMPUserMPU, TORUserPMP};
 use rv32i::syscall::SysCall;
 
-use crate::chip_config::CONFIG;
+use crate::chip_config::EarlGreyConfig;
 use crate::interrupts;
+use crate::pinmux_config::EarlGreyPinmuxConfig;
 use crate::plic::Plic;
 use crate::plic::PLIC;
 
-pub struct EarlGrey<'a, I: InterruptService + 'a> {
+pub struct EarlGrey<
+    'a,
+    const MPU_REGIONS: usize,
+    I: InterruptService + 'a,
+    CFG: EarlGreyConfig + 'static,
+    PINMUX: EarlGreyPinmuxConfig,
+    PMP: TORUserPMP<{ MPU_REGIONS }> + Display + 'static,
+> {
     userspace_kernel_boundary: SysCall,
-    pub pmp: PMP<8>,
+    pub mpu: PMPUserMPU<MPU_REGIONS, PMP>,
     plic: &'a Plic,
-    timer: &'static crate::timer::RvTimer<'static>,
+    timer: &'static crate::timer::RvTimer<'static, CFG>,
     pwrmgr: lowrisc::pwrmgr::PwrMgr,
     plic_interrupt_service: &'a I,
+    _cfg: PhantomData<CFG>,
+    _pinmux: PhantomData<PINMUX>,
 }
 
-pub struct EarlGreyDefaultPeripherals<'a> {
+pub struct EarlGreyDefaultPeripherals<'a, CFG: EarlGreyConfig, PINMUX: EarlGreyPinmuxConfig> {
     pub aes: crate::aes::Aes<'a>,
     pub hmac: lowrisc::hmac::Hmac<'a>,
     pub usb: lowrisc::usbdev::Usb<'a>,
@@ -39,28 +49,29 @@ pub struct EarlGreyDefaultPeripherals<'a> {
     pub flash_ctrl: lowrisc::flash_ctrl::FlashCtrl<'a>,
     pub rng: lowrisc::csrng::CsRng<'a>,
     pub watchdog: lowrisc::aon_timer::AonTimer,
+    _cfg: PhantomData<CFG>,
+    _pinmux: PhantomData<PINMUX>,
 }
 
-impl<'a> EarlGreyDefaultPeripherals<'a> {
+impl<'a, CFG: EarlGreyConfig, PINMUX: EarlGreyPinmuxConfig>
+    EarlGreyDefaultPeripherals<'a, CFG, PINMUX>
+{
     pub fn new() -> Self {
         Self {
             aes: crate::aes::Aes::new(),
             hmac: lowrisc::hmac::Hmac::new(crate::hmac::HMAC0_BASE),
             usb: lowrisc::usbdev::Usb::new(crate::usbdev::USB0_BASE),
-            uart0: lowrisc::uart::Uart::new(crate::uart::UART0_BASE, CONFIG.peripheral_freq),
+            uart0: lowrisc::uart::Uart::new(crate::uart::UART0_BASE, CFG::PERIPHERAL_FREQ),
             otbn: lowrisc::otbn::Otbn::new(crate::otbn::OTBN_BASE),
-            gpio_port: crate::gpio::Port::new(),
-            i2c0: lowrisc::i2c::I2c::new(
-                crate::i2c::I2C0_BASE,
-                (1 / CONFIG.cpu_freq) * 1000 * 1000,
-            ),
+            gpio_port: crate::gpio::Port::new::<PINMUX>(),
+            i2c0: lowrisc::i2c::I2c::new(crate::i2c::I2C0_BASE, (1 / CFG::CPU_FREQ) * 1000 * 1000),
             spi_host0: lowrisc::spi_host::SpiHost::new(
                 crate::spi_host::SPIHOST0_BASE,
-                CONFIG.cpu_freq,
+                CFG::CPU_FREQ,
             ),
             spi_host1: lowrisc::spi_host::SpiHost::new(
                 crate::spi_host::SPIHOST1_BASE,
-                CONFIG.cpu_freq,
+                CFG::CPU_FREQ,
             ),
             flash_ctrl: lowrisc::flash_ctrl::FlashCtrl::new(
                 crate::flash_ctrl::FLASH_CTRL_BASE,
@@ -70,17 +81,22 @@ impl<'a> EarlGreyDefaultPeripherals<'a> {
             rng: lowrisc::csrng::CsRng::new(crate::csrng::CSRNG_BASE),
             watchdog: lowrisc::aon_timer::AonTimer::new(
                 crate::aon_timer::AON_TIMER_BASE,
-                CONFIG.cpu_freq,
+                CFG::CPU_FREQ,
             ),
+            _cfg: PhantomData,
+            _pinmux: PhantomData,
         }
     }
 
     pub fn init(&'static self) {
         kernel::deferred_call::DeferredCallClient::register(&self.aes);
+        kernel::deferred_call::DeferredCallClient::register(&self.uart0);
     }
 }
 
-impl<'a> InterruptService for EarlGreyDefaultPeripherals<'a> {
+impl<'a, CFG: EarlGreyConfig, PINMUX: EarlGreyPinmuxConfig> InterruptService
+    for EarlGreyDefaultPeripherals<'a, CFG, PINMUX>
+{
     unsafe fn service_interrupt(&self, interrupt: u32) -> bool {
         match interrupt {
             interrupts::UART0_TX_WATERMARK..=interrupts::UART0_RX_PARITYERR => {
@@ -120,18 +136,29 @@ impl<'a> InterruptService for EarlGreyDefaultPeripherals<'a> {
     }
 }
 
-impl<'a, I: InterruptService + 'a> EarlGrey<'a, I> {
+impl<
+        'a,
+        const MPU_REGIONS: usize,
+        I: InterruptService + 'a,
+        CFG: EarlGreyConfig,
+        PINMUX: EarlGreyPinmuxConfig,
+        PMP: TORUserPMP<{ MPU_REGIONS }> + Display + 'static,
+    > EarlGrey<'a, MPU_REGIONS, I, CFG, PINMUX, PMP>
+{
     pub unsafe fn new(
         plic_interrupt_service: &'a I,
-        timer: &'static crate::timer::RvTimer,
+        timer: &'static crate::timer::RvTimer<CFG>,
+        pmp: PMP,
     ) -> Self {
         Self {
             userspace_kernel_boundary: SysCall::new(),
-            pmp: PMP::new(),
+            mpu: PMPUserMPU::new(pmp),
             plic: &PLIC,
             pwrmgr: lowrisc::pwrmgr::PwrMgr::new(crate::pwrmgr::PWRMGR_BASE),
             timer,
             plic_interrupt_service,
+            _cfg: PhantomData,
+            _pinmux: PhantomData,
         }
     }
 
@@ -225,12 +252,20 @@ impl<'a, I: InterruptService + 'a> EarlGrey<'a, I> {
     }
 }
 
-impl<'a, I: InterruptService + 'a> kernel::platform::chip::Chip for EarlGrey<'a, I> {
-    type MPU = PMP<8>;
+impl<
+        'a,
+        const MPU_REGIONS: usize,
+        I: InterruptService + 'a,
+        CFG: EarlGreyConfig,
+        PINMUX: EarlGreyPinmuxConfig,
+        PMP: TORUserPMP<{ MPU_REGIONS }> + Display + 'static,
+    > kernel::platform::chip::Chip for EarlGrey<'a, MPU_REGIONS, I, CFG, PINMUX, PMP>
+{
+    type MPU = PMPUserMPU<MPU_REGIONS, PMP>;
     type UserspaceKernelBoundary = SysCall;
 
     fn mpu(&self) -> &Self::MPU {
-        &self.pmp
+        &self.mpu
     }
 
     fn userspace_kernel_boundary(&self) -> &SysCall {
@@ -278,10 +313,10 @@ impl<'a, I: InterruptService + 'a> kernel::platform::chip::Chip for EarlGrey<'a,
     unsafe fn print_state(&self, writer: &mut dyn Write) {
         let _ = writer.write_fmt(format_args!(
             "\r\n---| OpenTitan Earlgrey configuration for {} |---",
-            CONFIG.name
+            CFG::NAME
         ));
         rv32i::print_riscv_state(writer);
-        let _ = writer.write_fmt(format_args!("{}", self.pmp));
+        let _ = writer.write_fmt(format_args!("{}", self.mpu.pmp));
     }
 }
 
@@ -409,55 +444,55 @@ pub extern "C" fn _start_trap_vectored() {
 }
 
 #[cfg(all(target_arch = "riscv32", target_os = "none"))]
-#[link_section = ".riscv.trap_vectored"]
-#[export_name = "_start_trap_vectored"]
-#[naked]
-pub extern "C" fn _start_trap_vectored() -> ! {
-    use core::arch::asm;
-    unsafe {
-        // According to the Ibex user manual:
-        // [NMI] has interrupt ID 31, i.e., it has the highest priority of all
-        // interrupts and the core jumps to the trap-handler base address (in
-        // mtvec) plus 0x7C to handle the NMI.
-        //
-        // Below are 32 (non-compressed) jumps to cover the entire possible
-        // range of vectored traps.
-        asm!(
-            "
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-            j _start_trap
-        ",
-            options(noreturn)
-        );
-    }
+extern "C" {
+    pub fn _start_trap_vectored();
 }
+
+#[cfg(all(target_arch = "riscv32", target_os = "none"))]
+// According to the Ibex user manual:
+// [NMI] has interrupt ID 31, i.e., it has the highest priority of all
+// interrupts and the core jumps to the trap-handler base address (in
+// mtvec) plus 0x7C to handle the NMI.
+//
+// Below are 32 (non-compressed) jumps to cover the entire possible
+// range of vectored traps.
+core::arch::global_asm!(
+    "
+            .section .riscv.trap_vectored, \"ax\"
+            .globl _start_trap_vectored
+          _start_trap_vectored:
+
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+            j _start_trap
+        "
+);

@@ -84,7 +84,7 @@ impl KernelResources<imxrt1060::chip::Imxrt10xx<imxrt1060::chip::Imxrt10xxDefaul
     type ContextSwitchCallback = ();
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
-        &self
+        self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
         &()
@@ -196,7 +196,7 @@ pub unsafe fn main() {
 
     peripherals.dcdc.clock().enable();
     peripherals.dcdc.set_target_vdd_soc(1250);
-    set_arm_clock(&peripherals.ccm, &peripherals.ccm_analog);
+    set_arm_clock(peripherals.ccm, &peripherals.ccm_analog);
     // IPG clock is 600MHz / 4 == 150MHz
     peripherals.ccm.set_ipg_divider(4);
 
@@ -348,12 +348,12 @@ pub unsafe fn main() {
         board_kernel,
         chip,
         core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            core::ptr::addr_of!(_sapps),
+            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
         ),
         core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            core::ptr::addr_of_mut!(_sappmem),
+            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
         ),
         &mut PROCESSES,
         &FAULT_RESPONSE,

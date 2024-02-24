@@ -101,7 +101,7 @@ impl KernelResources<e310_g002::chip::E310x<'static, E310G002DefaultPeripherals<
     type ContextSwitchCallback = ();
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
-        &self
+        self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
         &()
@@ -116,7 +116,7 @@ impl KernelResources<e310_g002::chip::E310x<'static, E310G002DefaultPeripherals<
         self.scheduler
     }
     fn scheduler_timer(&self) -> &Self::SchedulerTimer {
-        &self.scheduler_timer
+        self.scheduler_timer
     }
     fn watchdog(&self) -> &Self::WatchDog {
         &()
@@ -311,12 +311,12 @@ pub unsafe fn main() {
         board_kernel,
         chip,
         core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            core::ptr::addr_of!(_sapps),
+            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
         ),
         core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            core::ptr::addr_of_mut!(_sappmem),
+            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
         ),
         &mut PROCESSES,
         &FAULT_RESPONSE,

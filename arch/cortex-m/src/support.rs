@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-use core::ops::FnOnce;
+use crate::scb;
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 #[inline(always)]
@@ -57,4 +57,15 @@ where
     F: FnOnce() -> R,
 {
     unimplemented!()
+}
+
+pub fn reset() -> ! {
+    unsafe {
+        scb::reset();
+    }
+    loop {
+        // This is required to avoid the empty loop clippy
+        // warning #[warn(clippy::empty_loop)]
+        nop();
+    }
 }

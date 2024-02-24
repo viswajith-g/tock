@@ -29,7 +29,7 @@ impl IoWrite for Writer {
         for b in buf {
             // Print to a special address for simulation output
             unsafe {
-                write_volatile(0x8000_1008 as *mut u8, *b as u8);
+                write_volatile(0x8000_1008 as *mut u8, *b);
             }
         }
         buf.len()
@@ -40,7 +40,7 @@ impl IoWrite for Writer {
 #[cfg(not(test))]
 #[no_mangle]
 #[panic_handler]
-pub unsafe extern "C" fn panic_fmt(pi: &PanicInfo) -> ! {
+pub unsafe fn panic_fmt(pi: &PanicInfo) -> ! {
     let writer = &mut WRITER;
 
     debug::panic_print(

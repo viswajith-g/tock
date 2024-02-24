@@ -87,7 +87,7 @@ use kernel::scheduler::round_robin::RoundRobinSched;
 use kernel::{capabilities, create_capability, debug, debug_gpio, debug_verbose, static_init};
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
-use nrf52_components::{self, UartChannel, UartPins};
+use nrf52_components::{UartChannel, UartPins};
 
 #[allow(dead_code)]
 mod test;
@@ -185,8 +185,6 @@ type KVDriver = components::kv::KVDriverComponentType<VirtualKVPermissions>;
 type TemperatureDriver =
     components::temperature::TemperatureComponentType<nrf52840::temperature::Temp<'static>>;
 
-// type DynamicAppLoader = capsules_extra::app_loader::AppLoader<'static>;
-
 /// Supported drivers by the platform
 pub struct Platform {
     ble_radio: &'static capsules_extra::ble_advertising_driver::BLE<
@@ -234,7 +232,6 @@ pub struct Platform {
             nrf52840::spi::SPIM<'static>,
         >,
     >,
-    dynamic_app_loader: &'static capsules_extra::app_loader::AppLoader<'static>,        // for dynamic app loading (OTA)
     kv_driver: &'static KVDriver,
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
@@ -263,28 +260,9 @@ impl SyscallDriverLookup for Platform {
             capsules_core::spi_controller::DRIVER_NUM => f(Some(self.spi_controller)),
             capsules_extra::net::thread::driver::DRIVER_NUM => f(Some(self.thread_driver)),
             capsules_extra::kv_driver::DRIVER_NUM => f(Some(self.kv_driver)),
-            capsules_extra::app_loader::DRIVER_NUM => f(Some(self.dynamic_app_loader)),
             _ => f(None),
         }
     }
-}
-
-/// This is in a separate, inline(never) function so that its stack frame is
-/// removed when this function returns. Otherwise, the stack space used for
-/// these static_inits is wasted.
-#[inline(never)]
-unsafe fn create_peripherals() -> &'static mut Nrf52840DefaultPeripherals<'static> {
-    let ieee802154_ack_buf = static_init!(
-        [u8; nrf52840::ieee802154_radio::ACK_BUF_SIZE],
-        [0; nrf52840::ieee802154_radio::ACK_BUF_SIZE]
-    );
-    // Initialize chip peripheral drivers
-    let nrf52840_peripherals = static_init!(
-        Nrf52840DefaultPeripherals,
-        Nrf52840DefaultPeripherals::new(ieee802154_ack_buf)
-    );
-
-    nrf52840_peripherals
 }
 
 impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'static>>>
@@ -325,9 +303,15 @@ impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'
     }
 }
 
-/// Main function called after RAM initialized.
-#[no_mangle]
-pub unsafe fn main() {
+/// This is in a separate, inline(never) function so that its stack frame is
+/// removed when this function returns. Otherwise, the stack space used for
+/// these static_inits is wasted.
+#[inline(never)]
+pub unsafe fn start() -> (
+    &'static kernel::Kernel,
+    Platform,
+    &'static nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'static>>,
+) {
     //--------------------------------------------------------------------------
     // INITIAL SETUP
     //--------------------------------------------------------------------------
@@ -337,7 +321,15 @@ pub unsafe fn main() {
 
     // Set up peripheral drivers. Called in separate function to reduce stack
     // usage.
-    let nrf52840_peripherals = create_peripherals();
+    let ieee802154_ack_buf = static_init!(
+        [u8; nrf52840::ieee802154_radio::ACK_BUF_SIZE],
+        [0; nrf52840::ieee802154_radio::ACK_BUF_SIZE]
+    );
+    // Initialize chip peripheral drivers
+    let nrf52840_peripherals = static_init!(
+        Nrf52840DefaultPeripherals,
+        Nrf52840DefaultPeripherals::new(ieee802154_ack_buf)
+    );
 
     // Set up circular peripheral dependencies.
     nrf52840_peripherals.init();
@@ -399,7 +391,6 @@ pub unsafe fn main() {
     // functions.
     let process_management_capability =
         create_capability!(capabilities::ProcessManagementCapability);
-    let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
     let memory_allocation_capability = create_capability!(capabilities::MemoryAllocationCapability);
     let gpio_port = &nrf52840_peripherals.gpio_port;
 
@@ -963,7 +954,6 @@ pub unsafe fn main() {
         ),
         i2c_master_slave,
         spi_controller,
-        dynamic_app_loader,
         kv_driver,
         scheduler,
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
@@ -985,12 +975,12 @@ pub unsafe fn main() {
         board_kernel,
         chip,
         core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            core::ptr::addr_of!(_sapps),
+            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
         ),
         core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            core::ptr::addr_of_mut!(_sappmem),
+            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
         ),
         &mut PROCESSES,
         &FAULT_RESPONSE,
@@ -1002,7 +992,14 @@ pub unsafe fn main() {
         remaining_memory
     });
 
-    dynamic_process_loader.set_app_memory(remaining_memory);
+    (board_kernel, platform, chip)
+}
 
+/// Main function called after RAM initialized.
+#[no_mangle]
+pub unsafe fn main() {
+    let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
+
+    let (board_kernel, platform, chip) = start();
     board_kernel.kernel_loop(&platform, chip, Some(&platform.ipc), &main_loop_capability);
 } 

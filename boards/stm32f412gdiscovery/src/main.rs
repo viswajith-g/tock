@@ -45,15 +45,10 @@ const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::Panic
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
 
-// Function for the process console to use to reboot the board
-fn reset() -> ! {
-    unsafe {
-        cortexm4::scb::reset();
-    }
-    loop {
-        cortexm4::support::nop();
-    }
-}
+type TemperatureSTMSensor = components::temperature_stm::TemperatureSTMComponentType<
+    capsules_core::virtualizers::virtual_adc::AdcDevice<'static, stm32f412g::adc::Adc<'static>>,
+>;
+type TemperatureDriver = components::temperature::TemperatureComponentType<TemperatureSTMSensor>;
 
 /// A structure representing this platform that holds references to all
 /// capsules for this platform.
@@ -74,7 +69,7 @@ struct STM32F412GDiscovery {
     adc: &'static capsules_core::adc::AdcVirtualized<'static>,
     touch: &'static capsules_extra::touch::Touch<'static>,
     screen: &'static capsules_extra::screen::Screen<'static>,
-    temperature: &'static capsules_extra::temperature::TemperatureSensor<'static>,
+    temperature: &'static TemperatureDriver,
     rng: &'static capsules_core::rng::RngDriver<'static>,
 
     scheduler: &'static RoundRobinSched<'static>,
@@ -122,7 +117,7 @@ impl
     type ContextSwitchCallback = ();
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
-        &self
+        self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
         &()
@@ -690,38 +685,38 @@ pub unsafe fn main() {
     .finalize(components::temperature_stm_adc_component_static!(
         stm32f412g::adc::Adc
     ));
-    let grant_cap = create_capability!(capabilities::MemoryAllocationCapability);
-    let grant_temperature =
-        board_kernel.create_grant(capsules_extra::temperature::DRIVER_NUM, &grant_cap);
 
-    let temp = static_init!(
-        capsules_extra::temperature::TemperatureSensor<'static>,
-        capsules_extra::temperature::TemperatureSensor::new(temp_sensor, grant_temperature)
-    );
-    kernel::hil::sensors::TemperatureDriver::set_client(temp_sensor, temp);
+    let temp = components::temperature::TemperatureComponent::new(
+        board_kernel,
+        capsules_extra::temperature::DRIVER_NUM,
+        temp_sensor,
+    )
+    .finalize(components::temperature_component_static!(
+        TemperatureSTMSensor
+    ));
 
     let adc_channel_0 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f412g::adc::Channel::Channel1)
+        components::adc::AdcComponent::new(adc_mux, stm32f412g::adc::Channel::Channel1)
             .finalize(components::adc_component_static!(stm32f412g::adc::Adc));
 
     let adc_channel_1 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f412g::adc::Channel::Channel11)
+        components::adc::AdcComponent::new(adc_mux, stm32f412g::adc::Channel::Channel11)
             .finalize(components::adc_component_static!(stm32f412g::adc::Adc));
 
     let adc_channel_2 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f412g::adc::Channel::Channel13)
+        components::adc::AdcComponent::new(adc_mux, stm32f412g::adc::Channel::Channel13)
             .finalize(components::adc_component_static!(stm32f412g::adc::Adc));
 
     let adc_channel_3 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f412g::adc::Channel::Channel14)
+        components::adc::AdcComponent::new(adc_mux, stm32f412g::adc::Channel::Channel14)
             .finalize(components::adc_component_static!(stm32f412g::adc::Adc));
 
     let adc_channel_4 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f412g::adc::Channel::Channel15)
+        components::adc::AdcComponent::new(adc_mux, stm32f412g::adc::Channel::Channel15)
             .finalize(components::adc_component_static!(stm32f412g::adc::Adc));
 
     let adc_channel_5 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f412g::adc::Channel::Channel8)
+        components::adc::AdcComponent::new(adc_mux, stm32f412g::adc::Channel::Channel8)
             .finalize(components::adc_component_static!(stm32f412g::adc::Adc));
 
     let adc_syscall =
@@ -745,7 +740,7 @@ pub unsafe fn main() {
         uart_mux,
         mux_alarm,
         process_printer,
-        Some(reset),
+        Some(cortexm4::support::reset),
     )
     .finalize(components::process_console_component_static!(
         stm32f412g::tim2::Tim2
@@ -811,12 +806,12 @@ pub unsafe fn main() {
         board_kernel,
         chip,
         core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            core::ptr::addr_of!(_sapps),
+            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
         ),
         core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            core::ptr::addr_of_mut!(_sappmem),
+            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
         ),
         &mut PROCESSES,
         &FAULT_RESPONSE,

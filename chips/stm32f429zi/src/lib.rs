@@ -7,13 +7,18 @@
 use cortexm4::{CortexM4, CortexMVariant};
 
 pub use stm32f4xx::{
-    adc, can, chip, dbg, dma, exti, gpio, nvic, rcc, spi, syscfg, tim2, trng, usart,
+    adc, can, chip, clocks, dac, dbg, dma, exti, flash, gpio, nvic, rcc, spi, syscfg, tim2, trng,
+    usart,
 };
 
 pub mod can_registers;
+pub mod chip_specs;
 pub mod interrupt_service;
 pub mod stm32f429zi_nvic;
 pub mod trng_registers;
+
+pub mod pwr;
+pub mod rtc;
 
 // STM32F42xxx and STM32F43xxx has total of 91 interrupts
 #[cfg_attr(all(target_arch = "arm", target_os = "none"), link_section = ".irqs")]

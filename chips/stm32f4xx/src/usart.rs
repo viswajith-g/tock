@@ -160,7 +160,7 @@ pub const USART3_BASE: StaticRef<UsartRegisters> =
 
 // for use by dma1
 pub(crate) fn get_address_dr(regs: StaticRef<UsartRegisters>) -> u32 {
-    &regs.dr as *const ReadWrite<u32> as u32
+    core::ptr::addr_of!(regs.dr) as u32
 }
 
 #[allow(non_camel_case_types)]
@@ -306,26 +306,61 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
     // According to section 25.4.13, we need to make sure that USART TC flag is
     // set before disabling the DMA TX on the peripheral side.
     pub fn handle_interrupt(&self) {
-        self.clear_transmit_complete();
-        self.disable_transmit_complete_interrupt();
+        if self.registers.sr.is_set(SR::TC) {
+            self.clear_transmit_complete();
+            self.disable_transmit_complete_interrupt();
 
-        // Ignore if USARTStateTX is in some other state other than
-        // Transfer_Completing.
-        if self.usart_tx_state.get() == USARTStateTX::Transfer_Completing {
-            self.disable_tx();
-            self.usart_tx_state.set(USARTStateTX::Idle);
+            // Ignore if USARTStateTX is in some other state other than
+            // Transfer_Completing.
+            if self.usart_tx_state.get() == USARTStateTX::Transfer_Completing {
+                self.disable_tx();
+                self.usart_tx_state.set(USARTStateTX::Idle);
 
-            // get buffer
-            let buffer = self.tx_dma.map_or(None, |tx_dma| tx_dma.return_buffer());
-            let len = self.tx_len.get();
-            self.tx_len.set(0);
+                // get buffer
+                let buffer = self.tx_dma.map_or(None, |tx_dma| tx_dma.return_buffer());
+                let len = self.tx_len.get();
+                self.tx_len.set(0);
 
-            // alert client
-            self.tx_client.map(|client| {
-                buffer.map(|buf| {
-                    client.transmitted_buffer(buf, len, Ok(()));
+                // alert client
+                self.tx_client.map(|client| {
+                    buffer.map(|buf| {
+                        client.transmitted_buffer(buf, len, Ok(()));
+                    });
                 });
-            });
+            }
+        }
+
+        if self.is_enabled_error_interrupt() && self.registers.sr.is_set(SR::ORE) {
+            let _ = self.registers.dr.get(); // clear overrun error
+            if self.usart_rx_state.get() == USARTStateRX::DMA_Receiving {
+                self.usart_rx_state.set(USARTStateRX::Idle);
+
+                self.disable_rx();
+                self.disable_error_interrupt();
+
+                // get buffer
+                let (buffer, len) = self.rx_dma.map_or((None, 0), |rx_dma| {
+                    // `abort_transfer` also disables the stream
+                    rx_dma.abort_transfer()
+                });
+
+                // The number actually received is the difference between
+                // the requested number and the number remaining in DMA transfer.
+                let count = self.rx_len.get() - len as usize;
+                self.rx_len.set(0);
+
+                // alert client
+                self.rx_client.map(|client| {
+                    buffer.map(|buf| {
+                        client.received_buffer(
+                            buf,
+                            count,
+                            Err(ErrorCode::CANCEL),
+                            hil::uart::Error::OverrunError,
+                        );
+                    })
+                });
+            }
         }
     }
 
@@ -357,6 +392,21 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
         self.registers.cr3.modify(CR3::DMAR::CLEAR);
     }
 
+    // enable interrupts for framing, overrun and noise errors
+    fn enable_error_interrupt(&self) {
+        self.registers.cr3.modify(CR3::EIE::SET);
+    }
+
+    // disable interrupts for framing, overrun and noise errors
+    fn disable_error_interrupt(&self) {
+        self.registers.cr3.modify(CR3::EIE::CLEAR);
+    }
+
+    // check if interrupts for framing, overrun and noise errors are enbaled
+    fn is_enabled_error_interrupt(&self) -> bool {
+        self.registers.cr3.is_set(CR3::EIE)
+    }
+
     fn abort_tx(&self, rcode: Result<(), ErrorCode>) {
         self.disable_tx();
 
@@ -385,6 +435,7 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
 
     fn abort_rx(&self, rcode: Result<(), ErrorCode>, error: hil::uart::Error) {
         self.disable_rx();
+        self.disable_error_interrupt();
 
         // get buffer
         let (mut buffer, len) = self.rx_dma.map_or((None, 0), |rx_dma| {
@@ -430,6 +481,7 @@ impl<'a, DMA: dma::StreamServer<'a>> Usart<'a, DMA> {
             // to trigger an interrupt.
             if self.usart_rx_state.get() == USARTStateRX::DMA_Receiving {
                 self.disable_rx();
+                self.disable_error_interrupt();
                 self.usart_rx_state.set(USARTStateRX::Idle);
 
                 // get buffer
@@ -528,7 +580,7 @@ impl<'a, DMA: dma::StreamServer<'a>> hil::uart::Configure for Usart<'a, DMA> {
         if params.baud_rate != 115200
             || params.stop_bits != hil::uart::StopBits::One
             || params.parity != hil::uart::Parity::None
-            || params.hw_flow_control != false
+            || params.hw_flow_control
             || params.width != hil::uart::Width::Eight
         {
             panic!(
@@ -540,7 +592,7 @@ impl<'a, DMA: dma::StreamServer<'a>> hil::uart::Configure for Usart<'a, DMA> {
         self.registers.cr1.modify(CR1::M::CLEAR);
 
         // Set the stop bit length - 00: 1 Stop bits
-        self.registers.cr2.modify(CR2::STOP.val(0b00 as u32));
+        self.registers.cr2.modify(CR2::STOP.val(0b00_u32));
 
         // Set no parity
         self.registers.cr1.modify(CR1::PCE::CLEAR);
@@ -550,8 +602,8 @@ impl<'a, DMA: dma::StreamServer<'a>> hil::uart::Configure for Usart<'a, DMA> {
         // to Table 149 of reference manual, the value for BRR is 8.6875
         // DIV_Fraction = 0.6875 * 16 = 11 = 0xB
         // DIV_Mantissa = 8 = 0x8
-        self.registers.brr.modify(BRR::DIV_Fraction.val(0xB as u32));
-        self.registers.brr.modify(BRR::DIV_Mantissa.val(0x8 as u32));
+        self.registers.brr.modify(BRR::DIV_Fraction.val(0xB_u32));
+        self.registers.brr.modify(BRR::DIV_Mantissa.val(0x8_u32));
 
         // Enable transmit block
         self.registers.cr1.modify(CR1::TE::SET);
@@ -591,6 +643,8 @@ impl<'a, DMA: dma::StreamServer<'a>> hil::uart::Receive<'a> for Usart<'a, DMA> {
         });
 
         self.usart_rx_state.set(USARTStateRX::DMA_Receiving);
+
+        self.enable_error_interrupt();
 
         // enable dma rx on the peripheral side
         self.enable_rx();

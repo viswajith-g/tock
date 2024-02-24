@@ -54,15 +54,13 @@ const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::Panic
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x1700] = [0; 0x1700];
 
-// Function for the process console to use to reboot the board
-fn reset() -> ! {
-    unsafe {
-        cortexm4::scb::reset();
-    }
-    loop {
-        cortexm4::support::nop();
-    }
-}
+type L3GD20Sensor = components::l3gd20::L3gd20ComponentType<
+    capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+        'static,
+        stm32f303xc::spi::Spi<'static>,
+    >,
+>;
+type TemperatureDriver = components::temperature::TemperatureComponentType<L3GD20Sensor>;
 
 /// A structure representing this platform that holds references to all
 /// capsules for this platform.
@@ -77,7 +75,7 @@ struct STM32F3Discovery {
     >,
     button: &'static capsules_core::button::Button<'static, stm32f303xc::gpio::Pin<'static>>,
     ninedof: &'static capsules_extra::ninedof::NineDof<'static>,
-    l3gd20: &'static capsules_extra::l3gd20::L3gd20Spi<'static>,
+    l3gd20: &'static L3GD20Sensor,
     lsm303dlhc: &'static capsules_extra::lsm303dlhc::Lsm303dlhcI2C<
         'static,
         capsules_core::virtualizers::virtual_i2c::I2CDevice<
@@ -85,7 +83,7 @@ struct STM32F3Discovery {
             stm32f303xc::i2c::I2C<'static>,
         >,
     >,
-    temp: &'static capsules_extra::temperature::TemperatureSensor<'static>,
+    temp: &'static TemperatureDriver,
     alarm: &'static capsules_core::alarm::AlarmDriver<
         'static,
         VirtualMuxAlarm<'static, stm32f303xc::tim2::Tim2<'static>>,
@@ -143,7 +141,7 @@ impl
     type ContextSwitchCallback = ();
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
-        &self
+        self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
         &()
@@ -460,49 +458,49 @@ pub unsafe fn main() {
     let led = components::led::LedsComponent::new().finalize(components::led_component_static!(
         LedHigh<'static, stm32f303xc::gpio::Pin<'static>>,
         LedHigh::new(
-            &peripherals
+            peripherals
                 .gpio_ports
                 .get_pin(stm32f303xc::gpio::PinId::PE09)
                 .unwrap()
         ),
         LedHigh::new(
-            &peripherals
+            peripherals
                 .gpio_ports
                 .get_pin(stm32f303xc::gpio::PinId::PE08)
                 .unwrap()
         ),
         LedHigh::new(
-            &peripherals
+            peripherals
                 .gpio_ports
                 .get_pin(stm32f303xc::gpio::PinId::PE10)
                 .unwrap()
         ),
         LedHigh::new(
-            &peripherals
+            peripherals
                 .gpio_ports
                 .get_pin(stm32f303xc::gpio::PinId::PE15)
                 .unwrap()
         ),
         LedHigh::new(
-            &peripherals
+            peripherals
                 .gpio_ports
                 .get_pin(stm32f303xc::gpio::PinId::PE11)
                 .unwrap()
         ),
         LedHigh::new(
-            &peripherals
+            peripherals
                 .gpio_ports
                 .get_pin(stm32f303xc::gpio::PinId::PE14)
                 .unwrap()
         ),
         LedHigh::new(
-            &peripherals
+            peripherals
                 .gpio_ports
                 .get_pin(stm32f303xc::gpio::PinId::PE12)
                 .unwrap()
         ),
         LedHigh::new(
-            &peripherals
+            peripherals
                 .gpio_ports
                 .get_pin(stm32f303xc::gpio::PinId::PE13)
                 .unwrap()
@@ -516,7 +514,7 @@ pub unsafe fn main() {
         components::button_component_helper!(
             stm32f303xc::gpio::Pin<'static>,
             (
-                &peripherals
+                peripherals
                     .gpio_ports
                     .get_pin(stm32f303xc::gpio::PinId::PA00)
                     .unwrap(),
@@ -551,96 +549,96 @@ pub unsafe fn main() {
         components::gpio_component_helper!(
             stm32f303xc::gpio::Pin<'static>,
             // Left outer connector
-            0 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC01).unwrap(),
-            1 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC03).unwrap(),
-            // 2 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA01).unwrap(),
-            // 3 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA03).unwrap(),
-            // 4 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF04).unwrap(),
-            // 5 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA05).unwrap(),
-            // 6 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA07).unwrap(),
-            // 7 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC05).unwrap(),
-            // 8 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB01).unwrap(),
-            9 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE07).unwrap(),
-            // 10 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE09).unwrap(),
-            11 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE11).unwrap(),
-            // 12 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE13).unwrap(),
-            // 13 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE15).unwrap(),
-            14 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB11).unwrap(),
-            // 15 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB13).unwrap(),
-            // 16 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB15).unwrap(),
-            17 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD09).unwrap(),
-            18 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD11).unwrap(),
-            19 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD13).unwrap(),
-            20 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD15).unwrap(),
-            21 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC06).unwrap(),
+            0 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC01).unwrap(),
+            1 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC03).unwrap(),
+            // 2 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA01).unwrap(),
+            // 3 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA03).unwrap(),
+            // 4 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF04).unwrap(),
+            // 5 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA05).unwrap(),
+            // 6 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA07).unwrap(),
+            // 7 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC05).unwrap(),
+            // 8 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB01).unwrap(),
+            9 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE07).unwrap(),
+            // 10 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE09).unwrap(),
+            11 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE11).unwrap(),
+            // 12 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE13).unwrap(),
+            // 13 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE15).unwrap(),
+            14 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB11).unwrap(),
+            // 15 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB13).unwrap(),
+            // 16 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB15).unwrap(),
+            17 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD09).unwrap(),
+            18 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD11).unwrap(),
+            19 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD13).unwrap(),
+            20 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD15).unwrap(),
+            21 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC06).unwrap(),
             // Left inner connector
-            22 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC00).unwrap(),
-            23 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC02).unwrap(),
-            24 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF02).unwrap(),
-            // 25 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA00).unwrap(),
-            // 26 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA02).unwrap(),
-            // 27 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA04).unwrap(),
-            // 28 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA06).unwrap(),
-            // 29 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC04).unwrap(),
-            30 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB00).unwrap(),
-            31 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB02).unwrap(),
-            32 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE08).unwrap(),
-            33 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE10).unwrap(),
-            34 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE12).unwrap(),
-            // 35 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE14).unwrap(),
-            36 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB10).unwrap(),
-            // 37 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB12).unwrap(),
-            // 38 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB14).unwrap(),
-            39 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD08).unwrap(),
-            40 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD10).unwrap(),
-            41 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD12).unwrap(),
-            42 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD14).unwrap(),
-            43 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC07).unwrap(),
+            22 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC00).unwrap(),
+            23 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC02).unwrap(),
+            24 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF02).unwrap(),
+            // 25 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA00).unwrap(),
+            // 26 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA02).unwrap(),
+            // 27 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA04).unwrap(),
+            // 28 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA06).unwrap(),
+            // 29 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC04).unwrap(),
+            30 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB00).unwrap(),
+            31 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB02).unwrap(),
+            32 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE08).unwrap(),
+            33 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE10).unwrap(),
+            34 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE12).unwrap(),
+            // 35 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE14).unwrap(),
+            36 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB10).unwrap(),
+            // 37 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB12).unwrap(),
+            // 38 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB14).unwrap(),
+            39 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD08).unwrap(),
+            40 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD10).unwrap(),
+            41 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD12).unwrap(),
+            42 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD14).unwrap(),
+            43 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC07).unwrap(),
             // Right inner connector
-            44 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF09).unwrap(),
-            45 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF00).unwrap(),
-            46 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC14).unwrap(),
-            47 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE06).unwrap(),
-            48 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE04).unwrap(),
-            49 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE02).unwrap(),
-            50 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE00).unwrap(),
-            51 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB08).unwrap(),
+            44 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF09).unwrap(),
+            45 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF00).unwrap(),
+            46 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC14).unwrap(),
+            47 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE06).unwrap(),
+            48 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE04).unwrap(),
+            49 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE02).unwrap(),
+            50 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE00).unwrap(),
+            51 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB08).unwrap(),
             // 52 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB06).unwrap(),
-            53 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB04).unwrap(),
-            54 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD07).unwrap(),
-            55 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD05).unwrap(),
-            56 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD03).unwrap(),
-            57 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD01).unwrap(),
-            58 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC12).unwrap(),
-            59 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC10).unwrap(),
-            60 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA14).unwrap(),
-            61 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF06).unwrap(),
-            62 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA12).unwrap(),
-            63 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA10).unwrap(),
-            64 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA08).unwrap(),
-            65 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC08).unwrap(),
+            53 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB04).unwrap(),
+            54 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD07).unwrap(),
+            55 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD05).unwrap(),
+            56 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD03).unwrap(),
+            57 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD01).unwrap(),
+            58 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC12).unwrap(),
+            59 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC10).unwrap(),
+            60 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA14).unwrap(),
+            61 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF06).unwrap(),
+            62 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA12).unwrap(),
+            63 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA10).unwrap(),
+            64 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA08).unwrap(),
+            65 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC08).unwrap(),
             // Right outer connector
-            66 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF10).unwrap(),
-            67 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF01).unwrap(),
-            68 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC15).unwrap(),
-            69 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC13).unwrap(),
-            70 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE05).unwrap(),
-            71 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE03).unwrap(),
-            72 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE01).unwrap(),
-            73 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB09).unwrap(),
-            // 74 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB07).unwrap(),
-            75 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB05).unwrap(),
-            76 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB03).unwrap(),
-            77 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD06).unwrap(),
-            78 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD04).unwrap(),
-            79 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD02).unwrap(),
-            80 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD00).unwrap(),
-            81 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC11).unwrap(),
-            82 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA15).unwrap(),
-            83 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA13).unwrap(),
-            84 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA11).unwrap(),
-            85 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA09).unwrap(),
-            86 => &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC09).unwrap()
+            66 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF10).unwrap(),
+            67 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PF01).unwrap(),
+            68 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC15).unwrap(),
+            69 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC13).unwrap(),
+            70 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE05).unwrap(),
+            71 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE03).unwrap(),
+            72 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE01).unwrap(),
+            73 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB09).unwrap(),
+            // 74 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB07).unwrap(),
+            75 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB05).unwrap(),
+            76 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PB03).unwrap(),
+            77 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD06).unwrap(),
+            78 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD04).unwrap(),
+            79 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD02).unwrap(),
+            80 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PD00).unwrap(),
+            81 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC11).unwrap(),
+            82 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA15).unwrap(),
+            83 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA13).unwrap(),
+            84 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA11).unwrap(),
+            85 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PA09).unwrap(),
+            86 => gpio_ports.get_pin(stm32f303xc::gpio::PinId::PC09).unwrap()
         ),
     )
     .finalize(components::gpio_component_static!(
@@ -653,7 +651,7 @@ pub unsafe fn main() {
 
     let l3gd20 = components::l3gd20::L3gd20Component::new(
         spi_mux,
-        &gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE03).unwrap(),
+        gpio_ports.get_pin(stm32f303xc::gpio::PinId::PE03).unwrap(),
         board_kernel,
         capsules_extra::l3gd20::DRIVER_NUM,
     )
@@ -664,16 +662,13 @@ pub unsafe fn main() {
 
     l3gd20.power_on();
 
-    let grant_cap = create_capability!(capabilities::MemoryAllocationCapability);
-    let grant_temperature =
-        board_kernel.create_grant(capsules_extra::temperature::DRIVER_NUM, &grant_cap);
-
     // Comment this if you want to use the ADC MCU temp sensor
-    let temp = static_init!(
-        capsules_extra::temperature::TemperatureSensor<'static>,
-        capsules_extra::temperature::TemperatureSensor::new(l3gd20, grant_temperature)
-    );
-    kernel::hil::sensors::TemperatureDriver::set_client(l3gd20, temp);
+    let temp = components::temperature::TemperatureComponent::new(
+        board_kernel,
+        capsules_extra::temperature::DRIVER_NUM,
+        l3gd20,
+    )
+    .finalize(components::temperature_component_static!(L3GD20Sensor));
 
     // LSM303DLHC
 
@@ -737,19 +732,19 @@ pub unsafe fn main() {
     //         .finalize(components::adc_component_static!(stm32f303xc::adc::Adc));
 
     let adc_channel_2 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f303xc::adc::Channel::Channel2)
+        components::adc::AdcComponent::new(adc_mux, stm32f303xc::adc::Channel::Channel2)
             .finalize(components::adc_component_static!(stm32f303xc::adc::Adc));
 
     let adc_channel_3 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f303xc::adc::Channel::Channel3)
+        components::adc::AdcComponent::new(adc_mux, stm32f303xc::adc::Channel::Channel3)
             .finalize(components::adc_component_static!(stm32f303xc::adc::Adc));
 
     let adc_channel_4 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f303xc::adc::Channel::Channel4)
+        components::adc::AdcComponent::new(adc_mux, stm32f303xc::adc::Channel::Channel4)
             .finalize(components::adc_component_static!(stm32f303xc::adc::Adc));
 
     let adc_channel_5 =
-        components::adc::AdcComponent::new(&adc_mux, stm32f303xc::adc::Channel::Channel5)
+        components::adc::AdcComponent::new(adc_mux, stm32f303xc::adc::Channel::Channel5)
             .finalize(components::adc_component_static!(stm32f303xc::adc::Adc));
 
     let adc_syscall =
@@ -775,8 +770,8 @@ pub unsafe fn main() {
         &peripherals.flash,
         0x08038000, // Start address for userspace accesible region
         0x8000,     // Length of userspace accesible region (16 pages)
-        &_sstorage as *const u8 as usize,
-        &_estorage as *const u8 as usize - &_sstorage as *const u8 as usize,
+        core::ptr::addr_of!(_sstorage) as usize,
+        core::ptr::addr_of!(_estorage) as usize - core::ptr::addr_of!(_sstorage) as usize,
     )
     .finalize(components::nonvolatile_storage_component_static!(
         stm32f303xc::flash::Flash
@@ -792,7 +787,7 @@ pub unsafe fn main() {
         uart_mux,
         mux_alarm,
         process_printer,
-        Some(reset),
+        Some(cortexm4::support::reset),
     )
     .finalize(components::process_console_component_static!(
         stm32f303xc::tim2::Tim2
@@ -848,12 +843,12 @@ pub unsafe fn main() {
         board_kernel,
         chip,
         core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            core::ptr::addr_of!(_sapps),
+            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
         ),
         core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            core::ptr::addr_of_mut!(_sappmem),
+            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
         ),
         &mut PROCESSES,
         &FAULT_RESPONSE,

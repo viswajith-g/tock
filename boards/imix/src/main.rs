@@ -45,9 +45,6 @@ use sam4l::chip::Sam4lDefaultPeripherals;
 
 use capsules_extra::sha256::Sha256Software;
 
-// use cortexm4::scb::reset;
-// use crate::reset;
-
 use components::alarm::{AlarmDriverComponent, AlarmMuxComponent};
 use components::console::{ConsoleOrderedComponent, UartMuxComponent};
 use components::crc::CrcComponent;
@@ -120,7 +117,14 @@ static mut PROCESSES_REGION_SIZE: [usize; NUM_PROCS] = [0, 0, 0, 0];
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
 
-struct Imix <C: 'static + Chip> {
+type SI7021Sensor = components::si7021::SI7021ComponentType<
+    capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm<'static, sam4l::ast::Ast<'static>>,
+    capsules_core::virtualizers::virtual_i2c::I2CDevice<'static, sam4l::i2c::I2CHw<'static>>,
+>;
+type TemperatureDriver = components::temperature::TemperatureComponentType<SI7021Sensor>;
+type HumidityDriver = components::humidity::HumidityComponentType<SI7021Sensor>;
+
+struct Imix {
     pconsole: &'static capsules_core::process_console::ProcessConsole<
         'static,
         { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
@@ -136,8 +140,8 @@ struct Imix <C: 'static + Chip> {
     >,
     gpio: &'static capsules_core::gpio::GPIO<'static, sam4l::gpio::GPIOPin<'static>>,
     alarm: &'static AlarmDriver<'static, VirtualMuxAlarm<'static, sam4l::ast::Ast<'static>>>,
-    temp: &'static capsules_extra::temperature::TemperatureSensor<'static>,
-    humidity: &'static capsules_extra::humidity::HumiditySensor<'static>,
+    temp: &'static TemperatureDriver,
+    humidity: &'static HumidityDriver,
     ambient_light: &'static capsules_extra::ambient_light::AmbientLight<'static>,
     adc: &'static capsules_core::adc::AdcDedicated<'static, sam4l::adc::Adc<'static>>,
     process_loader: kernel::process_load_utilities::ProcessLoader<C>,
@@ -479,13 +483,13 @@ pub unsafe fn main() {
         capsules_extra::temperature::DRIVER_NUM,
         si7021,
     )
-    .finalize(components::temperature_component_static!());
+    .finalize(components::temperature_component_static!(SI7021Sensor));
     let humidity = components::humidity::HumidityComponent::new(
         board_kernel,
         capsules_extra::humidity::DRIVER_NUM,
         si7021,
     )
-    .finalize(components::humidity_component_static!());
+    .finalize(components::humidity_component_static!(SI7021Sensor));
 
     let fxos8700 = components::fxos8700::Fxos8700Component::new(mux_i2c, 0x1e, &peripherals.pc[13])
         .finalize(components::fxos8700_component_static!(
@@ -635,7 +639,7 @@ pub unsafe fn main() {
     let serial_num: sam4l::serial_num::SerialNum = sam4l::serial_num::SerialNum::new();
     let serial_num_bottom_16 = (serial_num.get_lower_64() & 0x0000_0000_0000_ffff) as u16;
     let src_mac_from_serial_num: MacAddress = MacAddress::Short(serial_num_bottom_16);
-    // const DEFAULT_EXT_SRC_MAC: [u8; 8] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
+    const DEFAULT_EXT_SRC_MAC: [u8; 8] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
 
     let aes_mux = static_init!(
         MuxAES128CCM<'static, sam4l::aes::Aes>,
@@ -653,7 +657,7 @@ pub unsafe fn main() {
         aes_mux,
         PAN_ID,
         serial_num_bottom_16,
-        // DEFAULT_EXT_SRC_MAC,
+        DEFAULT_EXT_SRC_MAC,
     )
     .finalize(components::ieee802154_component_static!(
         capsules_extra::rf233::RF233<
@@ -682,13 +686,10 @@ pub unsafe fn main() {
         board_kernel,
         capsules_extra::nonvolatile_storage_driver::DRIVER_NUM,
         &peripherals.flash_controller,
-        0x40000,                          // Start address for userspace accessible region
-        0x20000,                          // Length of userspace accessible region
-        &_sstorage as *const u8 as usize, //start address of kernel region
-        &_estorage as *const u8 as usize - &_sstorage as *const u8 as usize, // length of kernel region
-        NUM_PROCS,
-        &PROCESSES_REGION_START_ADDRESS,
-        &PROCESSES_REGION_SIZE,
+        0x60000, // Start address for userspace accessible region
+        0x20000, // Length of userspace accessible region
+        core::ptr::addr_of!(_sstorage) as usize, //start address of kernel region
+        core::ptr::addr_of!(_estorage) as usize - core::ptr::addr_of!(_sstorage) as usize, // length of kernel region
     )
     .finalize(components::nonvolatile_storage_component_static!(
         sam4l::flashcalw::FLASHCALW
@@ -861,12 +862,12 @@ pub unsafe fn main() {
         // &imix,
         chip,
         core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            core::ptr::addr_of!(_sapps),
+            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
         ),
         core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            core::ptr::addr_of_mut!(_sappmem),
+            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
         ),
         &mut PROCESSES,
         &FAULT_RESPONSE,

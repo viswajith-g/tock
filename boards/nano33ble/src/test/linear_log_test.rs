@@ -50,7 +50,7 @@ pub unsafe fn run(mux_alarm: &'static MuxAlarm<'static, Rtc>, flash_controller: 
     // Create actual log storage abstraction on top of flash.
     let log = static_init!(
         Log,
-        log::Log::new(&LINEAR_TEST_LOG, &flash_controller, pagebuffer, false)
+        log::Log::new(&LINEAR_TEST_LOG, flash_controller, pagebuffer, false)
     );
     flash::HasClient::set_client(flash_controller, log);
     kernel::deferred_call::DeferredCallClient::register(log);
@@ -163,7 +163,7 @@ impl<A: 'static + Alarm<'static>> LogTest<A> {
                 }
 
                 match self.log.read(buffer, buffer.len()) {
-                    Ok(_) => debug_verbose!("Dispatched asynchronous read operation."),
+                    Ok(()) => debug_verbose!("Dispatched asynchronous read operation."),
                     Err((return_code, buffer)) => {
                         self.buffer.replace(buffer);
                         match return_code {

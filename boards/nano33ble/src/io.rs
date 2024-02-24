@@ -5,7 +5,6 @@
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
-use cortexm4;
 use kernel::debug;
 use kernel::debug::IoWrite;
 use kernel::hil::led;
@@ -109,7 +108,7 @@ impl IoWrite for Writer {
                         n.clear_pending();
                         n.enable();
                     }
-                    if DUMMY.fired.get() == true {
+                    if DUMMY.fired.get() {
                         // buffer finished transmitting, return so we can output additional
                         // messages when requested by the panic handler.
                         break;
@@ -128,7 +127,7 @@ impl IoWrite for Writer {
 #[cfg(not(test))]
 #[no_mangle]
 #[panic_handler]
-pub unsafe extern "C" fn panic_fmt(pi: &PanicInfo) -> ! {
+pub unsafe fn panic_fmt(pi: &PanicInfo) -> ! {
     let led_kernel_pin = &nrf52840::gpio::GPIOPin::new(Pin::P0_13);
     let led = &mut led::LedLow::new(led_kernel_pin);
     let writer = &mut WRITER;

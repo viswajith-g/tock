@@ -5,6 +5,7 @@
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::str;
+use earlgrey::chip_config::EarlGreyConfig;
 use kernel::debug;
 use kernel::debug::IoWrite;
 
@@ -29,7 +30,7 @@ impl IoWrite for Writer {
         // during panic.
         earlgrey::uart::Uart::new(
             earlgrey::uart::UART0_BASE,
-            earlgrey::chip_config::CONFIG.peripheral_freq,
+            crate::ChipConfig::PERIPHERAL_FREQ,
         )
         .transmit_sync(buf);
         buf.len()
@@ -45,10 +46,13 @@ use kernel::hil::led;
 #[cfg(not(test))]
 #[no_mangle]
 #[panic_handler]
-pub unsafe extern "C" fn panic_fmt(pi: &PanicInfo) -> ! {
+pub unsafe fn panic_fmt(pi: &PanicInfo) -> ! {
     let first_led_pin = &mut earlgrey::gpio::GpioPin::new(
-        earlgrey::gpio::GPIO0_BASE,
-        earlgrey::gpio::PADCTRL_BASE,
+        earlgrey::gpio::GPIO_BASE,
+        earlgrey::pinmux::PadConfig::Output(
+            earlgrey::registers::top_earlgrey::MuxedPads::Ioa6,
+            earlgrey::registers::top_earlgrey::PinmuxOutsel::GpioGpio7,
+        ),
         earlgrey::gpio::pins::pin7,
     );
     first_led_pin.make_output();
@@ -81,7 +85,7 @@ pub unsafe extern "C" fn panic_fmt(pi: &PanicInfo) -> ! {
 #[cfg(test)]
 #[no_mangle]
 #[panic_handler]
-pub unsafe extern "C" fn panic_fmt(pi: &PanicInfo) -> ! {
+pub unsafe fn panic_fmt(pi: &PanicInfo) -> ! {
     let writer = &mut WRITER;
 
     #[cfg(feature = "sim_verilator")]

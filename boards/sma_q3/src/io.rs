@@ -4,7 +4,6 @@
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
-use cortexm4;
 use kernel::debug;
 use kernel::debug::IoWrite;
 use kernel::hil::led;
@@ -29,7 +28,7 @@ fn wait() {
 
 /// Set the RTT memory buffer used to output panic messages.
 pub unsafe fn set_rtt_memory(
-    rtt_memory: &'static mut capsules_extra::segger_rtt::SeggerRttMemory<'static>,
+    rtt_memory: &'static capsules_extra::segger_rtt::SeggerRttMemory<'static>,
 ) {
     WRITER = Writer::WriterRtt(rtt_memory);
 }
@@ -74,7 +73,7 @@ impl IoWrite for Writer {
 #[no_mangle]
 #[panic_handler]
 /// Panic handler
-pub unsafe extern "C" fn panic_fmt(pi: &PanicInfo) -> ! {
+pub unsafe fn panic_fmt(pi: &PanicInfo) -> ! {
     // The display LEDs (see back of board)
     let led_kernel_pin = &nrf52840::gpio::GPIOPin::new(Pin::P0_13);
     let led = &mut led::LedLow::new(led_kernel_pin);

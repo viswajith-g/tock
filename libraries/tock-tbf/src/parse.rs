@@ -4,8 +4,6 @@
 
 //! Tock Binary Format parsing code.
 
-use core::convert::TryInto;
-use core::iter::Iterator;
 use core::{mem, str};
 
 use crate::types;
@@ -136,7 +134,9 @@ pub fn parse_tbf_header(
                 let mut app_name_str = "";
                 let mut fixed_address_pointer: Option<types::TbfHeaderV2FixedAddresses> = None;
                 let mut permissions_pointer: Option<types::TbfHeaderV2Permissions<8>> = None;
-                let mut persistent_acls_pointer: Option<types::TbfHeaderV2PersistentAcl<8>> = None;
+                let mut storage_permissions_pointer: Option<
+                    types::TbfHeaderV2StoragePermissions<8>,
+                > = None;
                 let mut kernel_version: Option<types::TbfHeaderV2KernelVersion> = None;
 
                 // Iterate the remainder of the header looking for TLV entries.
@@ -259,8 +259,8 @@ pub fn parse_tbf_header(
                             permissions_pointer = Some(remaining.try_into()?);
                         }
 
-                        types::TbfHeaderTypes::TbfHeaderPersistentAcl => {
-                            persistent_acls_pointer = Some(remaining.try_into()?);
+                        types::TbfHeaderTypes::TbfHeaderStoragePermissions => {
+                            storage_permissions_pointer = Some(remaining.try_into()?);
                         }
 
                         types::TbfHeaderTypes::TbfHeaderKernelVersion => {
@@ -298,7 +298,7 @@ pub fn parse_tbf_header(
                     writeable_regions: Some(wfr_pointer),
                     fixed_addresses: fixed_address_pointer,
                     permissions: permissions_pointer,
-                    persistent_acls: persistent_acls_pointer,
+                    storage_permissions: storage_permissions_pointer,
                     kernel_version: kernel_version,
                 };
 
@@ -313,7 +313,10 @@ pub fn parse_tbf_footer(
     footers: &'static [u8],
 ) -> Result<(types::TbfFooterV2Credentials, u32), types::TbfParseError> {
     let mut remaining = footers;
-    let tlv_header: types::TbfTlv = remaining.try_into()?;
+    let tlv_header: types::TbfTlv = remaining
+        .get(0..4)
+        .ok_or(types::TbfParseError::NotEnoughFlash)?
+        .try_into()?;
     remaining = remaining
         .get(4..)
         .ok_or(types::TbfParseError::NotEnoughFlash)?;

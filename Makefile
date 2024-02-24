@@ -423,6 +423,7 @@ ci-job-libraries:
 	@cd libraries/riscv-csr && NOWARNINGS=true RUSTFLAGS="-D warnings" cargo test
 	@cd libraries/tock-cells && NOWARNINGS=true RUSTFLAGS="-D warnings" cargo test
 	@cd libraries/tock-register-interface && NOWARNINGS=true RUSTFLAGS="-D warnings" cargo test
+	@cd libraries/tickv && NOWARNINGS=true RUSTFLAGS="-D warnings" cargo test
 
 .PHONY: ci-job-archs
 ci-job-archs:
@@ -492,12 +493,8 @@ ci-job-tools: ci-setup-tools
 	$(if $(CI_JOB_TOOLS),$(call ci_job_tools))
 
 
-.PHONY: ci-setup-miri
-ci-setup-miri:
-	@rustup component list | grep miri | grep -q installed || rustup component add miri
-
 .PHONY: ci-job-miri
-ci-job-miri: ci-setup-miri
+ci-job-miri:
 	$(call banner,CI-Job: Miri)
 	#
 	# Note: This is highly experimental and limited at the moment.
@@ -517,7 +514,7 @@ ci-job-cargo-test-build:
 
 ### ci-runner-github-qemu jobs:
 
-QEMU_COMMIT_HASH=cab35c73be9d579db105ef73fa8a60728a890098
+QEMU_COMMIT_HASH=1600b9f46b1bd08b00fe86c46ef6dbb48cbe10d6
 define ci_setup_qemu_riscv
 	$(call banner,CI-Setup: Build QEMU)
 	@# Use the latest QEMU as it has OpenTitan support
