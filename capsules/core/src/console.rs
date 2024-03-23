@@ -57,16 +57,16 @@ pub const DRIVER_NUM: usize = driver::NUM::Console as usize;
 // pub const DEFAULT_BUF_SIZE: usize = 64;
 pub const DEFAULT_BUF_SIZE: usize = 517;
 
-/// IDs for subscribed upcalls.
-mod upcall {
-    /// Write buffer completed callback
-    pub const WRITE_DONE: usize = 1;
-    /// Read buffer completed callback
-    pub const READ_DONE: usize = 2;
-    /// Number of upcalls. Even though we only use two, indexing starts at 0 so
-    /// to be able to use indices 1 and 2 we need to specify three upcalls.
-    pub const COUNT: u8 = 3;
-}
+// /// IDs for subscribed upcalls.
+// mod upcall {
+//     /// Write buffer completed callback
+//     pub const WRITE_DONE: usize = 1;
+//     /// Read buffer completed callback
+//     pub const READ_DONE: usize = 2;
+//     /// Number of upcalls. Even though we only use two, indexing starts at 0 so
+//     /// to be able to use indices 1 and 2 we need to specify three upcalls.
+//     pub const COUNT: u8 = 3;
+// }
 
 /// IDs for subscribed upcalls.
 mod upcall {

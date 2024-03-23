@@ -8,6 +8,7 @@
 //! checking whether they are allowed to be loaded, and if so initializing a process
 //! structure to run it.
 
+use core::convert::TryInto;
 use core::fmt;
 
 use crate::capabilities::{ProcessApprovalCapability, ProcessManagementCapability};
@@ -199,7 +200,7 @@ pub fn load_and_check_processes<KR: KernelResources<C>, C: Chip>(
     mut procs: &'static mut [Option<&'static dyn Process>],
     fault_policy: &'static dyn ProcessFaultPolicy,
     _capability_management: &dyn ProcessManagementCapability,
-) -> Result<(), ProcessLoadError>
+) -> Result<&'static mut [u8], (ProcessLoadError, &'static mut [u8])>
 where
     <KR as KernelResources<C>>::CredentialsCheckingPolicy: 'static,
 {
@@ -241,8 +242,8 @@ pub fn load_processes<C: Chip>(
     mut procs: &'static mut [Option<&'static dyn Process>],
     fault_policy: &'static dyn ProcessFaultPolicy,
     _capability_management: &dyn ProcessManagementCapability,
-) -> Result<(), ProcessLoadError> {
-    load_processes_from_flash(
+) -> Result<&'static mut [u8], (ProcessLoadError, &'static mut [u8])> {
+    let remaining_memory = load_processes_from_flash(
         kernel,
         chip,
         app_flash,
@@ -297,7 +298,7 @@ fn load_processes_from_flash<C: Chip>(
     app_memory: &'static mut [u8],
     procs: &mut &'static mut [Option<&'static dyn Process>],
     fault_policy: &'static dyn ProcessFaultPolicy,
-) -> Result<(), ProcessLoadError> {
+) -> Result<&'static mut [u8], (ProcessLoadError, &'static mut [u8])> {
     if config::CONFIG.debug_load_processes {
         debug!(
             "Loading processes from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X}",

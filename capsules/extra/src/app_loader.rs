@@ -76,7 +76,7 @@ mod upcall {
     pub const COUNT: u8 = 2;
 }
 
-/// Ids for read-only allow buffers
+// Ids for read-only allow buffers
 mod ro_allow {
     /// Setup a buffer to write bytes to the nonvolatile storage.
     pub const WRITE: usize = 0;
@@ -123,20 +123,10 @@ impl Default for App {
     }
 }
 
-// // To set checks, etc.
-// #[derive(Copy, Clone, PartialEq)]
-// enum State {
-//     Idle,
-//     AppFlash,
-//     AppLoad,
-// }
-
-
 
 pub struct AppLoader<'a> {
     // The underlying physical storage device.
-    driver1: &'a dyn hil::nonvolatile_storage::NonvolatileStorage<'a>, 
-    driver2: &'a dyn process_load_utilities::DynamicProcessLoading,
+    driver: &'a dyn process_load_utilities::DynamicProcessLoading,
     // Per-app state.
     apps: Grant<
         App,
@@ -155,19 +145,17 @@ pub struct AppLoader<'a> {
 
 impl<'a> AppLoader<'a> {
     pub fn new(
-        driver1: &'a dyn hil::nonvolatile_storage::NonvolatileStorage<'a>, 
-        driver2: &'a dyn process_load_utilities::DynamicProcessLoading, 
         grant: Grant<
             App,
             UpcallCount<{ upcall::COUNT }>,
             AllowRoCount<{ ro_allow::COUNT }>,
             AllowRwCount<{ rw_allow::COUNT }>,
         >,
+        driver: &'a dyn process_load_utilities::DynamicProcessLoading, 
         buffer: &'static mut [u8],
     ) -> AppLoader<'a> {
         AppLoader {
-            driver1: driver1,
-            driver2: driver2,
+            driver: driver,
             apps: grant,
             buffer: TakeCell::new(buffer),
             current_user: OptionalCell::empty(),
@@ -185,23 +173,21 @@ impl<'a> AppLoader<'a> {
         offset: usize,
         length: usize,
         processid: Option<ProcessId>,
-    ) -> Result<(), ErrorCode> {
-        // Do bounds check.
+    ) -> Result<(bool, usize, usize, ProcessId), ErrorCode> {
+
         match command {
             NonvolatileCommand::UserspaceRead | NonvolatileCommand::UserspaceWrite => {
                 // Userspace sees memory that starts at address 0 even if it
                 // is offset in the physical memory.
-                if offset >= self.new_app_start_addr.get()
-                    || length > self.new_app_length.get()
-                    || offset + length > self.new_app_length.get()
+                if length > self.new_app_length.get() || offset + length > self.new_app_length.get()
                 {
+                    debug!("Invalid Length!\n");
                     return Err(ErrorCode::INVAL);
                 }
+                debug!("offset: {}\n length: {}\n", offset, length);
             }
         }
 
-        // Do very different actions if this is a call from userspace
-        // or from the kernel.
         match command {
             NonvolatileCommand::UserspaceRead | NonvolatileCommand::UserspaceWrite => {
                 processid.map_or(Err(ErrorCode::FAIL), |processid| {
@@ -238,6 +224,7 @@ impl<'a> AppLoader<'a> {
 
                                 // Need to copy bytes if this is a write!
                                 if command == NonvolatileCommand::UserspaceWrite {
+                                    debug!("userspace_write command matched");
                                     let _ = kernel_data
                                         .get_readonly_processbuffer(ro_allow::WRITE)
                                         .and_then(|write| {
@@ -250,19 +237,21 @@ impl<'a> AppLoader<'a> {
                                                     let write_len =
                                                         cmp::min(active_len, kernel_buffer.len());
 
-                                                    let d = &app_buffer[0..write_len];
+                                                    debug!("write len: {}", write_len);
+
+                                                    let buf_data = &app_buffer[0..write_len];
                                                     for (i, c) in kernel_buffer[0..write_len]
                                                         .iter_mut()
                                                         .enumerate()
                                                     {
-                                                        *c = d[i].get();
+                                                        *c = buf_data[i].get();
                                                     }
                                                 });
                                             })
                                         });
                                 }
-
-                                self.userspace_call_driver(command, offset, active_len)
+                                // debug!("Pending command: {:?}, offset: {:?}, length: {:?}, pid: {:?}", app.pending_command, offset, length, processid);
+                                Ok((app.pending_command ,offset, length, processid))   
                              } 
                             else {  
                                 // Some app is using the storage, we must wait.
@@ -276,7 +265,7 @@ impl<'a> AppLoader<'a> {
                                     app.command = command;
                                     app.offset = offset;
                                     app.length = active_len;
-                                    Ok(())
+                                    Ok((app.pending_command, app.offset, app.length, processid))   //pending command is true, so the process loader won't do anything with it
                                 }
                             }
                         })
@@ -286,39 +275,10 @@ impl<'a> AppLoader<'a> {
         }
     }
 
-    fn userspace_call_driver(
-        &self,
-        command: NonvolatileCommand,
-        offset: usize,
-        length: usize,
-    ) -> Result<(), ErrorCode> {
-        // Calculate where we want to actually read from in the physical
-        // storage.
-        let physical_address = offset + self.new_app_start_addr.get();// offset + self.userspace_start_address;
-
-        self.buffer
-            .take()
-            .map_or(Err(ErrorCode::RESERVE), |buffer| {
-                // Check that the internal buffer and the buffer that was
-                // allowed are long enough.
-                let active_len = cmp::min(length, buffer.len());
-
-                // self.current_app.set(Some(processid));
-                match command {
-                    NonvolatileCommand::UserspaceRead => {
-                        self.driver1.read(buffer, physical_address, active_len)
-                    }
-                    NonvolatileCommand::UserspaceWrite => {
-                        
-                        self.driver1.write(buffer, physical_address, active_len)
-                    }
-                    _ => Err(ErrorCode::FAIL),
-                }
-            })
-    }
+    // check queue when you get a callback. Probably move this to the previous impl?
 
     fn check_queue(&self) {
-            // If the kernel is not requesting anything, check all of the apps.
+        // Check all of the apps.
             for cntr in self.apps.iter() {
                 let processid = cntr.processid();
                 let started_command = cntr.enter(|app, _| {
@@ -328,7 +288,9 @@ impl<'a> AppLoader<'a> {
                             processid: processid,
                         });
                         if let Ok(()) =
-                            self.userspace_call_driver(app.command, app.offset, app.length)
+                            self.buffer.take().map_or(Err(ErrorCode::RESERVE), |buffer|{
+                                self.driver.write_app_data(app.pending_command, buffer, app.offset, app.length, processid)
+                            })
                         {
                             true
                         } else {
@@ -345,51 +307,17 @@ impl<'a> AppLoader<'a> {
     }
 }
 
-/// This is the callback client for the underlying physical storage driver.
-impl hil::nonvolatile_storage::NonvolatileStorageClient for AppLoader<'_> {
-    fn read_done(&self, buffer: &'static mut [u8], length: usize) {
+impl kernel::process_load_utilities::DynamicProcessLoadingClient for AppLoader<'_>{
+    fn app_data_write_done(&self, buffer: &'static mut [u8], length: usize) {
         // Switch on which user of this capsule generated this callback.
+        debug!("Received write done callback at the capsule.");
         self.current_user.take().map(|user| {
             match user {
                 NonvolatileUser::App { processid } => {
-                    let _ = self.apps.enter(processid, move |_, kernel_data| {
-                        // Need to copy in the contents of the buffer
-                        let _ = kernel_data
-                            .get_readwrite_processbuffer(rw_allow::READ)
-                            .and_then(|read| {
-                                read.mut_enter(|app_buffer| {
-                                    let read_len = cmp::min(app_buffer.len(), length);
-
-                                    let d = &app_buffer[0..read_len];
-                                    for (i, c) in buffer[0..read_len].iter().enumerate() {
-                                        d[i].set(*c);
-                                    }
-                                })
-                            });
-
-                        // Replace the buffer we used to do this read.
-                        self.buffer.replace(buffer);
-
-                        // And then signal the app.
-                        kernel_data
-                            .schedule_upcall(upcall::READ_DONE, (length, 0, 0))
-                            .ok();
-                    });
-                }   
-            }
-        });
-
-        self.check_queue();
-    }
-
-    fn write_done(&self, buffer: &'static mut [u8], length: usize) {
-        // Switch on which user of this capsule generated this callback.
-        self.current_user.take().map(|user| {
-            match user {
-                NonvolatileUser::App { processid } => {
+                    // debug!("Ready to send upcall to userspace app.");
                     let _ = self.apps.enter(processid, move |_app, kernel_data| {
                         // Replace the buffer we used to do this write.
-                        self.buffer.replace(buffer);
+                        self.buffer.replace(buffer); 
 
                         // And then signal the app.
                         kernel_data
@@ -399,10 +327,10 @@ impl hil::nonvolatile_storage::NonvolatileStorageClient for AppLoader<'_> {
                 }
             }
         });
-
         self.check_queue();
     }
 }
+
 
 /// Provide an interface for userland.
 impl SyscallDriver for AppLoader<'_> {
@@ -414,7 +342,7 @@ impl SyscallDriver for AppLoader<'_> {
     ///
     /// - `0`: Return Ok(()) if this driver is included on the platform.
     /// - `1`: Request kernel to setup for loading app. 
-    /// - `2`: Start a write to the nonvolatile_storage.
+    /// - `2`: Request kernel to write app data to the nonvolatile_storage.
     /// - `3`: Request kernel to load app.
 
     fn command(
@@ -429,13 +357,13 @@ impl SyscallDriver for AppLoader<'_> {
 
             1 => {
                 //setup phase
-                let res = self.driver2.setup(arg1);     // pass the size of the app to the setup function
+                // debug!("matched command 1");
+                let res = self.driver.setup(arg1);     // pass the size of the app to the setup function
                 match res {
                     Ok((start_addr, app_len)) => {
                         self.new_app_start_addr.set(start_addr); 
                         self.new_app_length.set(app_len);
-                        debug!("Start Address: {}\n
-                                App Length: {}\n", start_addr, app_len);
+                        debug!("Start Address: {}\n App Length: {}\n", start_addr, app_len);
                         CommandReturn::success()
                     },
                     
@@ -444,30 +372,40 @@ impl SyscallDriver for AppLoader<'_> {
             }
 
             2 => {
-                // Issue a write command
-                    let res = self.enqueue_command(
-                        NonvolatileCommand::UserspaceWrite,
-                        arg1,
-                        arg2,
-                        Some(processid),
-                    );
+                // Issue a write command to the kernel
 
-                    match res {
-                        Ok(()) => CommandReturn::success(),
-                        Err(e) => CommandReturn::failure(e),
+                let res = self.enqueue_command(
+                    NonvolatileCommand::UserspaceWrite, 
+                    arg1, 
+                    arg2,
+                    Some(processid));
+                match res {
+                    Ok((flag, offset, len, pid)) => {
+                        // debug!("Sending write request to kernel");
+                        let result = self.buffer.take().map_or(Err(ErrorCode::RESERVE), |buffer|{
+                            let res = self.driver.write_app_data(flag, buffer, offset, len, pid);
+                            match res {
+                                Ok(()) => Ok(()),
+                                Err(e) => Err(e),
+                            }
+                        });
+                        match result {
+                            Ok(()) => CommandReturn::success(),
+                            Err(e) => CommandReturn::failure(e),
+                        }
                     }
+                    Err(e) => CommandReturn::failure(e)
                 }
+            }
 
             3 => {
                 // Request kernel to load the new app
-                let res = self.driver2.load();
+                let res = self.driver.load();
                 match res {
                     Ok(()) => CommandReturn::success(),
                     Err(e) => CommandReturn::failure(e),
                 }
             }
-            
-
             _ => CommandReturn::failure(ErrorCode::NOSUPPORT),
         }
     }

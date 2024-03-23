@@ -151,6 +151,13 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 static mut CHIP: Option<&'static nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>> = None;
 static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
 
+// //Arrays are used to save start address and length of process, which will be used in checking overlap region between a new app and already loaded apps
+// static mut PROCESSES_REGION_START_ADDRESS: [usize; NUM_PROCS] = [0, 0, 0, 0, 0, 0, 0, 0];
+// static mut PROCESSES_REGION_SIZE: [usize; NUM_PROCS] = [0, 0, 0, 0, 0, 0, 0, 0]; 
+
+// static new_app_start_addr: usize = 0;
+// static new_app_length: usize = 0;
+
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
@@ -906,33 +913,55 @@ pub unsafe fn main() {
     //-------------------------------------------------------------------------
 
 
-    let dynamic_process_loader = static_init!(
-        kernel::process_load_utilities::DynamicProcessLoader<
-            nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
-        >,
-        kernel::process_load_utilities::DynamicProcessLoader::new(
-            &mut PROCESSES,
-            board_kernel,
-            chip,
-            core::slice::from_raw_parts(
-                &_sapps as *const u8,
-                &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
-            ),
-            &FAULT_RESPONSE,
-        )
-    );
+    // let dynamic_process_loader = static_init!(
+    //     kernel::process_load_utilities::DynamicProcessLoader<
+    //         nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
+    //     >,
+    //     kernel::process_load_utilities::DynamicProcessLoader::new(
+            // &mut PROCESSES,
+            // board_kernel,
+            // chip,
+            // kernel::process_load_utilities::DRIVER_NUM,
+            // core::slice::from_raw_parts(
+            //     &_sapps as *const u8,
+            //     &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            // ), 
+            // &base_peripherals.nvmc,
+            // &FAULT_RESPONSE,
+    //     )
+    // ); 
+
+    let dynamic_process_loader = components::dyn_process_loader::ProcessLoaderComponent::new(
+        &mut PROCESSES,
+        board_kernel,
+        chip,
+        // kernel::process_load_utilities::DRIVER_NUM,
+        core::slice::from_raw_parts(
+            &_sapps as *const u8,
+            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+        ), 
+        &base_peripherals.nvmc,
+        &FAULT_RESPONSE,
+    )
+    .finalize(components::process_loader_component_static!(
+        nrf52840::nvmc::Nvmc,
+        nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>, 
+    ));
+
+    debug!("Created a dynamic_process_loader instance");
+
+    //--------------------------------------------------------------------------
+    // Dynamic App Load (OTA)
+    //--------------------------------------------------------------------------
 
     let dynamic_app_loader = components::app_loader::AppLoaderComponent::new(
             board_kernel,
             capsules_extra::app_loader::DRIVER_NUM,
-            &base_peripherals.nvmc,
             dynamic_process_loader,
         )
-        .finalize(components::app_loader_component_static!(
-            nrf52840::nvmc::Nvmc 
-        ));
-    
-    // debug!("Created a dynamic_app_loader instance");
+        .finalize(components::app_loader_component_static!());
+
+    debug!("Created a dynamic_app_loader instance");
 
     //--------------------------------------------------------------------------
     // PLATFORM SETUP, SCHEDULER, AND START KERNEL LOOP
@@ -1002,7 +1031,9 @@ pub unsafe fn main() {
         remaining_memory
     });
 
-    dynamic_process_loader.set_app_memory(remaining_memory);
+    dynamic_process_loader.flash_and_memory(remaining_memory, 
+                                            &_sapps as *const u8 as usize,
+                                            &_eapps as *const u8 as usize);
 
     board_kernel.kernel_loop(&platform, chip, Some(&platform.ipc), &main_loop_capability);
 } 
