@@ -44,18 +44,17 @@
 //! let dynamic_app_loader = components::app_loader::AppLoaderComponent::new(
 //!     board_kernel,
 //!     capsules_extra::app_loader::DRIVER_NUM,
-//!     &base_peripherals.nvmc,
 //!     dynamic_process_loader,
-//!     ).finalize(components::app_loader_component_static!(
-//!                 nrf52840::nvmc::Nvmc));
+//!     ).finalize(components::app_loader_component_static!());
+//!
+//! NOTE: This implementation currently only loads new apps. It does not perhaps update apps. That remains to be tested.
 //! ```
 
 use core::cell::Cell;
 use core::cmp;
 
 use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
-use kernel::hil;
-use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
+use kernel::processbuffer::{ReadableProcessBuffer};
 use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::{ErrorCode, ProcessId};
@@ -68,12 +67,10 @@ pub const DRIVER_NUM: usize = driver::NUM::AppLoader as usize;
 
 /// IDs for subscribed upcalls.
 mod upcall {
-    /// Read done callback.
-    pub const READ_DONE: usize = 0;
     /// Write done callback.
-    pub const WRITE_DONE: usize = 1;
+    pub const WRITE_DONE: usize = 0;
     /// Number of upcalls.
-    pub const COUNT: u8 = 2;
+    pub const COUNT: u8 = 1;
 }
 
 // Ids for read-only allow buffers
@@ -100,7 +97,7 @@ pub enum NonvolatileCommand {
     UserspaceWrite,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum NonvolatileUser {
     App { processid: ProcessId },
 }
@@ -139,7 +136,6 @@ pub struct AppLoader<'a> {
     buffer: TakeCell<'static, [u8]>,
     // What issued the currently executing call.
     current_user: OptionalCell<NonvolatileUser>,
-    new_app_start_addr: Cell<usize>,
     new_app_length: Cell<usize>,
 }
 
@@ -159,7 +155,6 @@ impl<'a> AppLoader<'a> {
             apps: grant,
             buffer: TakeCell::new(buffer),
             current_user: OptionalCell::empty(),
-            new_app_start_addr: Cell::new(0),
             new_app_length: Cell::new(0),
         }
     }
@@ -275,8 +270,6 @@ impl<'a> AppLoader<'a> {
         }
     }
 
-    // check queue when you get a callback. Probably move this to the previous impl?
-
     fn check_queue(&self) {
         // Check all of the apps.
             for cntr in self.apps.iter() {
@@ -360,10 +353,9 @@ impl SyscallDriver for AppLoader<'_> {
                 // debug!("matched command 1");
                 let res = self.driver.setup(arg1);     // pass the size of the app to the setup function
                 match res {
-                    Ok((start_addr, app_len)) => {
-                        self.new_app_start_addr.set(start_addr); 
+                    Ok(app_len) => {
                         self.new_app_length.set(app_len);
-                        debug!("Start Address: {}\n App Length: {}\n", start_addr, app_len);
+                        debug!("Setup successful for app length: {}\n", app_len);
                         CommandReturn::success()
                     },
                     
@@ -402,8 +394,20 @@ impl SyscallDriver for AppLoader<'_> {
                 // Request kernel to load the new app
                 let res = self.driver.load();
                 match res {
-                    Ok(()) => CommandReturn::success(),
-                    Err(e) => CommandReturn::failure(e),
+                    Ok(()) => {
+                        self.new_app_length.set(0); // reset the app length
+                        // App::default();
+                        // self.current_user.take();
+                        // debug!("Current User: {:?}", self.current_user.get());
+                        CommandReturn::success()
+                    }
+                    Err(e) => {
+                        self.new_app_length.set(0); // reset the app length
+                        // App::default();
+                        // self.current_user.take();        // this breaks the code
+                        // debug!("Current User: {:?}", self.current_user.get());
+                        CommandReturn::failure(e)
+                    }
                 }
             }
             _ => CommandReturn::failure(ErrorCode::NOSUPPORT),

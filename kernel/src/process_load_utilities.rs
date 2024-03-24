@@ -1,13 +1,11 @@
-//! Helper functions related to Tock processes by OTA_app.
+//! Dynamic Process Loader for OTA application loads and updates
 
 use core::cell::Cell;
 use core::cmp;
 
-// use crate::capabilities::MemoryAllocationCapability;
 use crate::config;
 use crate::create_capability;
 use crate::debug;
-// use crate::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
 use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::process::ProcessId;
@@ -15,43 +13,13 @@ use crate::process::{self, Process};
 use crate::process_loading::ProcessLoadError;
 use crate::process_policies::ProcessFaultPolicy;
 use crate::process_standard::ProcessStandard;
-// use crate::syscall_driver::{CommandReturn, SyscallDriver};
 use crate::utilities::cells::{MapCell, OptionalCell, TakeCell};
 use crate::ErrorCode;
 use crate::hil::nonvolatile_storage::{NonvolatileStorage, NonvolatileStorageClient};
-// use crate::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
-// use crate::hil::process_load_utilities::{DynamicProcessLoadingHasClient, DynamicProcessLoadingClient};
 
-// pub const DRIVER_NUM: usize = 0x10002;  //to create grant
 pub const BUF_LEN: usize = 512;    
+const MAX_PROCS: usize = 10; // ;    //need this to compute padding.
 const TBF_HEADER_LENGTH: usize = 16;
-
-
-/// IDs for subscribed upcalls.
-// mod upcall {
-//     /// Read done callback.
-//     pub const READ_DONE: usize = 0;
-//     /// Write done callback.
-//     pub const WRITE_DONE: usize = 1;
-//     /// Number of upcalls.
-//     pub const COUNT: u8 = 2;
-// }
-
-// /// Ids for read-only allow buffers
-// mod ro_allow {
-//     /// Setup a buffer to write bytes to the nonvolatile storage.
-//     pub const WRITE: usize = 0;
-//     /// The number of allow buffers the kernel stores for this grant
-//     pub const COUNT: u8 = 1;
-// }
-
-// /// Ids for read-write allow buffers
-// mod rw_allow {
-//     /// Setup a buffer to read from the nonvolatile storage into.
-//     pub const READ: usize = 0;
-//     /// The number of allow buffers the kernel stores for this grant
-//     pub const COUNT: u8 = 1;
-// }
          
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum NonvolatileCommand {
@@ -59,33 +27,11 @@ pub enum NonvolatileCommand {
     UserspaceWrite,
 }
 
-// #[derive(Clone, Copy)]
-// pub enum NonvolatileUser {
-//     App { processid: ProcessId },
-// }
-
-// pub struct App {
-//     // pending_command: bool,
-//     command: NonvolatileCommand,
-//     offset: usize,
-//     length: usize,
-//     new_addr: usize,
-//     new_len: usize,
-// }
-
-// impl Default for App {
-//     fn default() -> App {
-//         App {
-//             // pending_command: false,
-//             command: NonvolatileCommand::UserspaceRead,
-//             offset: 0,
-//             length: 0,
-//             new_addr: 0,
-//             new_len: 0,
-//         }
-//     }
-// }
-
+#[derive(Clone, Copy)]
+pub enum NonvolatileUser {
+    Client,
+    Kernel,
+}
 
 struct NewApp{
     // App size requested by userland ota app
@@ -108,7 +54,7 @@ pub trait DynamicProcessLoading {
     ///   and the size of the region to store the process.
     /// - `Err(ErrorCode)`: If there is nowhere to store the process a suitable
     ///   `ErrorCode` will be returned.
-    fn setup(&self, app_length: usize) -> Result<(usize, usize), ErrorCode>;
+    fn setup(&self, app_length: usize) -> Result<usize, ErrorCode>;
 
     /// Instruct the kernel to write data to the flash
     ///
@@ -142,18 +88,13 @@ pub struct DynamicProcessLoader<'a, C: 'static + Chip> {
     flash_start: Cell<usize>,
     flash_end: Cell<usize>,
     new_process_flash: OptionalCell<&'static [u8]>,
-    // current_user: OptionalCell<NonvolatileUser>,
-    // apps: Grant<
-    //     App,
-    //     UpcallCount<{ upcall::COUNT }>,
-    //     AllowRoCount<{ ro_allow::COUNT }>,
-    //     AllowRwCount<{ rw_allow::COUNT }>,
-    // >, 
     driver: &'a dyn NonvolatileStorage<'a>,
     buffer: TakeCell<'static, [u8]>,
     new_app_start_addr: Cell<usize>,
     new_app_length: Cell<usize>,
     client: OptionalCell<&'static dyn DynamicProcessLoadingClient>,
+    current_user: OptionalCell<NonvolatileUser>,
+    kernel_client_callback: Cell<bool>,
 }
 
 impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
@@ -163,12 +104,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
         chip: &'static C,
         flash: &'static [u8],
         fault_policy: &'static dyn ProcessFaultPolicy,
-        // apps: Grant<
-        //     App,
-        //     UpcallCount<{ upcall::COUNT }>,
-        //     AllowRoCount<{ ro_allow::COUNT }>,
-        //     AllowRwCount<{ rw_allow::COUNT }>,
-        // >, 
         driver: &'a dyn NonvolatileStorage<'a>,
         buffer: &'static mut [u8],
     ) -> Self {
@@ -182,13 +117,13 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
             flash_end: Cell::new(0),
             fault_policy,
             new_process_flash: OptionalCell::empty(),
-            // current_user: OptionalCell::empty(),
-            // apps: apps,
             driver: driver,
             buffer: TakeCell::new(buffer),
             new_app_start_addr: Cell::new(0),
             new_app_length: Cell::new(0),
             client: OptionalCell::empty(),
+            current_user: OptionalCell::empty(),
+            kernel_client_callback: Cell::new(false),
         }
     }
 
@@ -232,9 +167,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
         if !padding_flag {                  //perform this bounds check if it is not a padding header because it comes from the user application
             match command {
                 NonvolatileCommand::UserspaceRead | NonvolatileCommand::UserspaceWrite => {
-                    // Userspace sees memory that starts at address 0 even if it
-                    // is offset in the physical memory.
-                    
                     if offset >= self.new_app_start_addr.get()
                         || length > self.new_app_length.get()
                         || offset + length > self.new_app_length.get()
@@ -258,11 +190,10 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
         user_buffer: &'static mut [u8],
         offset: usize,
         length: usize,
-        // new_app_address: usize,
     ) -> Result<(), ErrorCode> {
         // Calculate where we want to actually read from in the physical
         // storage.
-        let mut physical_address = 0;
+        let physical_address:usize;
         if !padding_flag{
             physical_address = offset + self.new_app_start_addr.get();
         }
@@ -522,118 +453,120 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
     fn write_padding_app(&self, 
         current_process_end_addr: usize, 
         padding_app_length: usize,
+        offset: usize,
         version: u16,
         padding_header_len: usize,)
         -> Result<(), ErrorCode>{
 
-        // let padding_length:usize = padding_app_length;
+        debug!("Kernel client callback: {:?}", self.kernel_client_callback.get());
 
-        //let mut padding_array: [u8;padding_length] = [0xff; padding_length];
-        self.buffer.map(|buffer|{
-            // let mut padding_array: [u8;TBF_HEADER_LENGTH] = [0xff; TBF_HEADER_LENGTH];
-            // let padding_buffer: &'static mut [u8] = &mut padding_array;
-            // write the header into the array
+        debug!("Flash offset: {:?}", offset);
+        if offset == current_process_end_addr {
+            debug!("First iteration padding");
+            self.buffer.map(|buffer|{
+                // write the header into the array
 
-            //first two bytes are the kernel version
-            buffer[0] = (version & 0xff) as u8;
-            buffer[1] = ((version >> 8) & 0xff) as u8;
+                //first two bytes are the kernel version
+                buffer[0] = (version & 0xff) as u8;
+                buffer[1] = ((version >> 8) & 0xff) as u8;
 
-            // the next two bytes are the header length
-            buffer[2] = (padding_header_len & 0xff) as u8;
-            buffer[3] = ((padding_header_len >> 8) & 0xff) as u8;
-            
-            // the next 4 bytes are the total app length including the header
-            buffer[4] = (padding_app_length & 0xff) as u8;
-            buffer[5] = ((padding_app_length >> 8) & 0xff) as u8;
-            buffer[6] = ((padding_app_length >> 16) & 0xff) as u8;
-            buffer[7] = ((padding_app_length >> 24) & 0xff) as u8;
-            
-            // we set the flags to 0
-            for i in 8..12 {
-                buffer[i] = 0x00 as u8;
-            }
+                // the next two bytes are the header length
+                buffer[2] = (padding_header_len & 0xff) as u8;
+                buffer[3] = ((padding_header_len >> 8) & 0xff) as u8;
+                
+                // the next 4 bytes are the total app length including the header
+                buffer[4] = (padding_app_length & 0xff) as u8;
+                buffer[5] = ((padding_app_length >> 8) & 0xff) as u8;
+                buffer[6] = ((padding_app_length >> 16) & 0xff) as u8;
+                buffer[7] = ((padding_app_length >> 24) & 0xff) as u8;
+                
+                // we set the flags to 0
+                for i in 8..12 {
+                    buffer[i] = 0x00 as u8;
+                }
 
-            // xor of the previous values
-            buffer[12] = (buffer[0] ^ buffer[4] ^ buffer[8]) as u8;
-            buffer[13] = (buffer[1] ^ buffer[5] ^ buffer[9]) as u8;
-            buffer[14] = (buffer[2] ^ buffer[6] ^ buffer[10]) as u8;
-            buffer[15] = (buffer[3] ^ buffer[7] ^ buffer[11]) as u8;
+                // xor of the previous values
+                buffer[12] = buffer[0] ^ buffer[4] ^ buffer[8];
+                buffer[13] = buffer[1] ^ buffer[5] ^ buffer[9];
+                buffer[14] = buffer[2] ^ buffer[6] ^ buffer[10];
+                buffer[15] = buffer[3] ^ buffer[7] ^ buffer[11];
 
-            // set the rest of the values to 0xff
-            for i in 16..BUF_LEN{
-                buffer[i] = 0xff as u8;
-            }
-        });
-        
+                for i in 16..BUF_LEN{
+                    buffer[i] = 0xff as u8;     //creating the padding
+                }
+            });
+        }
+        else{
+            debug!("Other iterations padding");
+            self.buffer.map(|buffer|{
+                for i in 0..BUF_LEN{
+                    buffer[i] = 0xff as u8;     //creating the padding
+                }
+            });
+        }
 
-        // self.buffer.map(|buffer|{
-        //     let buf_data = &padding_array[0..TBF_HEADER_LENGTH];
-        //     for (i, c) in buffer[0..TBF_HEADER_LENGTH].iter_mut().ennumerate(){
-        //         *c = buf_data[i];
-        //     }
-        // });
-
-    //    unimplemented!();       // writing to flash
-
-        // set up to write padding app to flash
-
-        // let write_count:usize = 0;
-        // let mut flash_offset:usize = 0;
-        // let write_buffer:[u8;TBF_HEADER_LENGTH] = [0;TBF_HEADER_LENGTH];
-
-        // write_count = padding_array.len()/BUF_LEN;
-
-        // let offset:u32 = 0;
-
-        // for offset in (0..write_count).step_by(BUF_LEN){
-
-        //copy this section of the appbinary into the shared buffer (or maybe directly into the flash?)
-        // flash_offset = current_process_end_addr - self.flash_start.get();   // where to get flash_start from?
-
-        // self.enqueue_command(
-        //     true,                                   //let the function know that this is the padding header being written
-        //     NonvolatileCommand::UserspaceWrite, 
-        //     padding_buffer,
-        //     flash_offset,
-        //     TBF_HEADER_LENGTH,);
-        //write it to flash
+        // currently fails in writing padding because buffer is not released by the time it comes back for the next iteration
         let result = self.buffer.take().map_or(Err(ErrorCode::RESERVE), |buffer|{
             let res = self.enqueue_command(
                 true,                                   //let the function know that this is the padding header being written
                 NonvolatileCommand::UserspaceWrite, 
                 buffer,
-                current_process_end_addr,
+                offset,
                 BUF_LEN,);
             match res {
                     Ok(()) => Ok(()),
                     Err(e) => Err(e),
                 }
-        });
+            });
         match result{
-            Ok(()) => Ok(()),
+            Ok(()) => 
+            // {
+                // // need to implement a semaphore of sorts. kernel_client_callback is already available, the question is how to yield?
+                // self.kernel_client_callback.set(true);
+                // while !self.kernel_client_callback.get(){
+                //     if self.kernel_client_callback.get(){
+                //         debug!("Kernel Write Buffer Replaced.");
+                //         self.kernel_client_callback.set(false);
+                //         Ok(())
+                //     }
+                // }
+                // debug!("Kernel Client Callback: {:?}", self.kernel_client_callback.get());
+                
+                // debug!("Kernel Client Callback: {:?}", self.kernel_client_callback.get());
+                Ok(()),
+            // },
             Err(e) => Err(e),
         }
-        // }
     }
 
 }
 
 /// This is the callback client for the underlying physical storage driver.
 impl<'a, C: 'static + Chip> NonvolatileStorageClient for DynamicProcessLoader<'a, C> {
-    fn read_done(&self, buffer: &'static mut [u8], length: usize) {         //we will never use this, but we need to implement this anyway
+    fn read_done(&self, _buffer: &'static mut [u8], _length: usize) {         //we will never use this, but we need to implement this anyway
         unimplemented!();
-
     }
 
     fn write_done(&self, buffer: &'static mut [u8], length: usize) {            // change it so the callback is issued to the capsule
-        // Switch on which user of this capsule generated this callback.
+        // Switch on which user generated this callback.
         debug!("Received callback from NV Storage");
 
-        self.client.map(|client| {
-            debug!("issuing callback to client");
-            client.app_data_write_done(buffer, length);
-            }); 
-
+        self.current_user.take().map(|user|{
+            match user{
+                NonvolatileUser::Client => {
+                    self.client.map(|client| {
+                        debug!("issuing callback to client");
+                        client.app_data_write_done(buffer, length);
+                    }); 
+                }
+                NonvolatileUser::Kernel => {
+                    debug!("Kernel NV callback");
+                    self.buffer.replace(buffer);
+                    self.kernel_client_callback.set(true);
+                    debug!("Kernel Client Callback: {:?}", self.kernel_client_callback.get());
+                }
+            }
+        });
     }
 }
 
@@ -644,7 +577,7 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
         self.client.set(client);
     }
 
-    fn setup(&self, app_length: usize) -> Result<(usize, usize), ErrorCode> {
+    fn setup(&self, app_length: usize) -> Result<usize, ErrorCode> {
 
         let mut new_app_data = NewApp{      // struct to hold some information about the new app
             size: 0,
@@ -668,7 +601,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                         .get()
                         .get(offset..offset + app_length)
                         .ok_or(ErrorCode::FAIL)?;
-                    let new_process_flash_start = new_process_flash.as_ptr() as usize;
 
                     self.new_process_flash.set(new_process_flash);
                         
@@ -681,12 +613,12 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
 
                     debug!("Found next available address!");
 
-                    Ok((new_process_flash_start, app_length))
+                    Ok(app_length)
                 },   
-            Err(err) => 
+            Err(_err) => 
             {
                 debug!("Failed to setup for new app.");
-                Ok((0,0))
+                Ok(0)
             },
         }
     }
@@ -697,10 +629,10 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
         buffer: &'static mut [u8],
         offset: usize,
         length: usize,
-        processid: ProcessId,
+        _processid: ProcessId,
     ) -> Result<(), ErrorCode> {
-
-        if !flag{
+        if !flag{       // this flag checks if the result is from a command that can be executed now, or if the command has been tabled for later
+            self.current_user.set(NonvolatileUser::Client);
             let res = self.enqueue_command(false, NonvolatileCommand::UserspaceWrite, buffer, offset, length);
             match res{
                 Ok(()) => Ok(()),
@@ -708,7 +640,7 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
             }
         }
         else{   
-            unimplemented!();   //when the app is pending (the capsule currently returns something but we don't want it to do anything here)
+            unimplemented!();   //when there are pending commands (the capsule currently returns something but we don't want it to do anything here)
         }
     }
 
@@ -814,7 +746,7 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                 }
             };
             process_option.map(|process| {
-                if config::CONFIG.debug_load_processes {
+                // if config::CONFIG.debug_load_processes {
                     let addresses = process.get_addresses();
                         debug!(
                         "Loaded process[{}] from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X} = {:?}",
@@ -825,17 +757,9 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                         addresses.sram_end - 1,
                         process.get_process_name()
                     );
-                }
+                // }
             });
 
-            // //we return sram_end_addresses
-            // let addresses = process.get_addresses();
-            // sram_end_addresses = addresses.sram_end;
-
-            // //we return process_copy
-            // process_copy = Some(process);
-
-            // self.app_memory.set(unused_memory);
             self.procs.map(|procs| procs[index] = process_option);
 
             let capability = create_capability!(crate::capabilities::ProcessApprovalCapability);
@@ -851,107 +775,85 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                     }
                 });
             });
-            self.new_app_start_addr.set(0);    // reset the global new_app_start_address
+            debug!("Added process to processes array");
+
+            // reset the global new app start address and length values
+            self.new_app_start_addr.set(0);    
             self.new_app_length.set(0);
 
-            let new_process_count = self.find_open_process_slot().unwrap_or_default();  // should never default because we have at least the OTA helper app running
-            // check if there is a remnant app in that space
-            let current_process_end_addr = entry_flash.as_ptr() as usize + entry_flash.len();
-            let mut next_process_start_addr:usize = 0;
+            // write padding app after the current process
+            
+            let current_process_end_addr = entry_flash.as_ptr() as usize + entry_flash.len();   // the end address of our newly loaded application
+            let mut next_app_start_addr:usize;      // value to store the address until which we need to write the padding app
+
+            let mut processes_start_addresses: [usize; MAX_PROCS] = [0; MAX_PROCS];
 
             self.procs.map(|procs| {
-                for (proc_index, value) in procs.iter().enumerate(){
-                    if proc_index == new_process_count{
-                    {
-                        debug!("Loaded App Index: {:?}", index);
-                        debug!("New App Index: {:?}", new_process_count);
-                        debug!("Current process end address: {:?}",current_process_end_addr);
-                        match procs[proc_index]{
-                            Some(app)=>{
-                                debug!("There is an app here, this should be the length");
-                                next_process_start_addr = app.get_addresses().flash_start as usize;
-                            }
-                            None => {
-                                debug!("There are no more apps, setting padding until the end of flash");
-                                next_process_start_addr = self.flash_end.get() as usize;
-                                debug!("End of flash is: {:?}", next_process_start_addr);
-                            }
+                for (procs_index, value) in procs.iter().enumerate(){
+                    match value{
+                        Some(app)=>{    //for every app in the process array, we note down the start address
+                            // for elements in self.processes_start_addresses.iter_mut(){
+                            //     *elements = app.get_addresses().flash_start as u8; 
+                            // }
+                            processes_start_addresses[procs_index] = app.get_addresses().flash_start as usize;
+                        }
+                        None=>{ //if there is no app at an index in the process array, we simply set the process start address to 0
+                            // for elements in self.processes_start_addresses.iter_mut(){
+                            //     *elements = 0;   // store the start address of each process
+                            // }
+                            processes_start_addresses[procs_index] = 0;
                         }
                     }
                 }
-                }
             });
-            
-            let padding_app_length = next_process_start_addr - current_process_end_addr;
+
+            // We compute the closest neighbor to our app such that:
+            // 1. the neighbor app has to be placed in flash after our newly loaded app
+            // 2. in the event of multiple apps in the flash after our app, we choose the one with the lowest starting address
+            // if there are no apps after ours in the process array, we simply pad till the end of flash
+            // CONCERN: Do we have to check for inactive apps and skip them, or do we call this housekeeping?
+
+            if let Some(closest_neighbor) = processes_start_addresses.iter()
+                                            .filter(|&&x| x as usize > current_process_end_addr)
+                                            .min(){
+                                                next_app_start_addr = *closest_neighbor as usize;
+                                                debug!("Found the next closest app at {:?}", next_app_start_addr);
+                                            }
+            else{
+                next_app_start_addr = self.flash_end.get() as usize;
+                debug!("There are no more apps in flash. End of flash is: {:?}", next_app_start_addr);
+            }
+
+            let padding_app_length = next_app_start_addr - current_process_end_addr;    // calculating the distance between our app and 
+                                                                                            // either the next app, or the end of the flash
             debug!("padding_app_length: {:?}",padding_app_length);
 
-            let padding_result = self.write_padding_app(current_process_end_addr, padding_app_length, version, header_length as usize);
+            let write_count = padding_app_length/BUF_LEN;       //how many times we need to run the write loop for the padding
+            debug!("write count: {:?}", write_count);
+
+            let mut padding_offset:usize;   // the actual physical offset from the end of our newly loaded app
+
+            for offset in (0..write_count).step_by(BUF_LEN){
+                debug!("Offset calculation: {:?}", offset);
+                padding_offset = offset + current_process_end_addr; 
+                self.current_user.set(NonvolatileUser::Kernel);
+                let padding_result = self.write_padding_app(current_process_end_addr, padding_app_length, padding_offset, 
+                                                            version, TBF_HEADER_LENGTH);
                 match padding_result {
                     Ok(()) => {
-                        // if config::CONFIG.debug_load_processes {
-                            debug!("Padding app written");
-                        // }
-                        // Ok(())
-                        // Ok((current_process_end_addr, padding_app_length, version, header_length as usize))
+                            debug!("Padding app segment written");
                     }
                     Err(_err) => {   
-                        // if config::CONFIG.debug_load_processes {
                             debug!("Error writing padding app");
-                        // }
                         return Err(ErrorCode::FAIL);
                     }
                 }
-
-            // self.procs.map(|procs| {
-                // let current_process = procs[index];
-                // let next_process = procs[index+1];
-                
-                // let mut current_process_end_address = 0;
-                // let mut next_process_start_address = 0;
-                // procs[index].map(|p|{
-                //     current_process_end_address = p.unwrap().get_addresses().flash_end as usize+ 1;
-                // });
-                // procs[index + 1].map(|p|{
-                //     next_process_start_address = p.unwrap().get_addresses().flash_start as usize;
-                // });
-                // let current_addresses = procs[index].get_addresses();
-
-                // let current_process_end_addr = entry_flash.as_ptr() as usize + entry_flash.len();
-                // debug!("Current process end address: {:?}",current_process_end_addr);
-                
-
-                // if let Some(next_process_start_addr) = procs[index + 1].unwrap().get_addresses().flash_start as usize;
-                // debug!("Next process start address: {:?}",next_process_start_addr);
-    
-                // let padding_app_length = next_process_start_addr - current_process_end_addr;
-                // debug!("padding_app_lengths: {:?}",padding_app_length);
-    
-                // let padding_result = self.write_padding_app(current_process_end_addr, padding_app_length, version, header_length as usize);
-                // match padding_result {
-                //     Ok(()) => {
-                //         if config::CONFIG.debug_load_processes {
-                //             debug!("Padding app written");
-                //         }
-                //         Ok(())
-                //         // Ok((current_process_end_addr, padding_app_length, version, header_length as usize))
-                //     }
-                //     Err(_err) => {   
-                //         if config::CONFIG.debug_load_processes {
-                //             debug!("Error writing padding app");
-                //         }
-                //         return Err(ErrorCode::FAIL);
-                //     }
-                // }
-            // });
+            }
         } else {
             //header length 0 means invalid header
             return Err(ErrorCode::FAIL);
         }
-
-        // write padding app after the current process
-
-        
-
+        self.current_user.set(NonvolatileUser::Client);    //switching the user back to the capsule
         Ok(())
     }
 }

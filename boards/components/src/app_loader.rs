@@ -24,12 +24,10 @@
 //! ```
 
 use capsules_extra::app_loader::AppLoader;
-use capsules_extra::nonvolatile_to_pages::NonvolatileToPages;
 use core::mem::MaybeUninit;
 use kernel::capabilities;
 use kernel::component::Component;
 use kernel::create_capability;
-use kernel::hil;
 use kernel::process_load_utilities;
 
 
