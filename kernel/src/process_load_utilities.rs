@@ -451,7 +451,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
     }
 
     fn write_padding_app(&self, 
-        current_process_end_addr: usize, 
         padding_app_length: usize,
         offset: usize,
         version: u16,
@@ -461,7 +460,7 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
         debug!("Kernel client callback: {:?}", self.kernel_client_callback.get());
 
         debug!("Flash offset: {:?}", offset);
-        if offset == current_process_end_addr {
+        // if offset == current_process_end_addr {
             debug!("First iteration padding");
             self.buffer.map(|buffer|{
                 // write the header into the array
@@ -495,16 +494,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
                     buffer[i] = 0xff as u8;     //creating the padding
                 }
             });
-        }
-        else{
-            debug!("Other iterations padding");
-            self.buffer.map(|buffer|{
-                for i in 0..BUF_LEN{
-                    buffer[i] = 0xff as u8;     //creating the padding
-                }
-            });
-        }
-
         // currently fails in writing padding because buffer is not released by the time it comes back for the next iteration
         let result = self.buffer.take().map_or(Err(ErrorCode::RESERVE), |buffer|{
             let res = self.enqueue_command(
@@ -519,22 +508,7 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
                 }
             });
         match result{
-            Ok(()) => 
-            // {
-                // // need to implement a semaphore of sorts. kernel_client_callback is already available, the question is how to yield?
-                // self.kernel_client_callback.set(true);
-                // while !self.kernel_client_callback.get(){
-                //     if self.kernel_client_callback.get(){
-                //         debug!("Kernel Write Buffer Replaced.");
-                //         self.kernel_client_callback.set(false);
-                //         Ok(())
-                //     }
-                // }
-                // debug!("Kernel Client Callback: {:?}", self.kernel_client_callback.get());
-                
-                // debug!("Kernel Client Callback: {:?}", self.kernel_client_callback.get());
-                Ok(()),
-            // },
+            Ok(()) => Ok(()),
             Err(e) => Err(e),
         }
     }
@@ -784,23 +758,17 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
             // write padding app after the current process
             
             let current_process_end_addr = entry_flash.as_ptr() as usize + entry_flash.len();   // the end address of our newly loaded application
-            let mut next_app_start_addr:usize;      // value to store the address until which we need to write the padding app
+            let mut next_app_start_addr:usize = 0;      // value to store the address until which we need to write the padding app
 
             let mut processes_start_addresses: [usize; MAX_PROCS] = [0; MAX_PROCS];
 
             self.procs.map(|procs| {
                 for (procs_index, value) in procs.iter().enumerate(){
                     match value{
-                        Some(app)=>{    //for every app in the process array, we note down the start address
-                            // for elements in self.processes_start_addresses.iter_mut(){
-                            //     *elements = app.get_addresses().flash_start as u8; 
-                            // }
+                        Some(app)=>{  
                             processes_start_addresses[procs_index] = app.get_addresses().flash_start as usize;
                         }
-                        None=>{ //if there is no app at an index in the process array, we simply set the process start address to 0
-                            // for elements in self.processes_start_addresses.iter_mut(){
-                            //     *elements = 0;   // store the start address of each process
-                            // }
+                        None=>{ 
                             processes_start_addresses[procs_index] = 0;
                         }
                     }
@@ -811,7 +779,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
             // 1. the neighbor app has to be placed in flash after our newly loaded app
             // 2. in the event of multiple apps in the flash after our app, we choose the one with the lowest starting address
             // if there are no apps after ours in the process array, we simply pad till the end of flash
-            // CONCERN: Do we have to check for inactive apps and skip them, or do we call this housekeeping?
 
             if let Some(closest_neighbor) = processes_start_addresses.iter()
                                             .filter(|&&x| x as usize > current_process_end_addr)
@@ -823,30 +790,22 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                 next_app_start_addr = self.flash_end.get() as usize;
                 debug!("There are no more apps in flash. End of flash is: {:?}", next_app_start_addr);
             }
-
+            
             let padding_app_length = next_app_start_addr - current_process_end_addr;    // calculating the distance between our app and 
                                                                                             // either the next app, or the end of the flash
             debug!("padding_app_length: {:?}",padding_app_length);
 
-            let write_count = padding_app_length/BUF_LEN;       //how many times we need to run the write loop for the padding
-            debug!("write count: {:?}", write_count);
-
-            let mut padding_offset:usize;   // the actual physical offset from the end of our newly loaded app
-
-            for offset in (0..write_count).step_by(BUF_LEN){
-                debug!("Offset calculation: {:?}", offset);
-                padding_offset = offset + current_process_end_addr; 
-                self.current_user.set(NonvolatileUser::Kernel);
-                let padding_result = self.write_padding_app(current_process_end_addr, padding_app_length, padding_offset, 
-                                                            version, TBF_HEADER_LENGTH);
-                match padding_result {
-                    Ok(()) => {
-                            debug!("Padding app segment written");
-                    }
-                    Err(_err) => {   
-                            debug!("Error writing padding app");
-                        return Err(ErrorCode::FAIL);
-                    }
+            // let offset:usize = current_process_end_addr;
+            self.current_user.set(NonvolatileUser::Kernel);
+            let padding_result = self.write_padding_app(padding_app_length, current_process_end_addr, 
+                                                        version, TBF_HEADER_LENGTH);
+            match padding_result {
+                Ok(()) => {
+                        debug!("Padding app segment written");
+                }
+                Err(_err) => {   
+                        debug!("Error writing padding app");
+                    return Err(ErrorCode::FAIL);
                 }
             }
         } else {
