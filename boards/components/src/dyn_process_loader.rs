@@ -4,31 +4,31 @@
 
 //! Component for non-volatile storage Drivers.
 //!
-//! This provides one component, NonvolatileStorageComponent, which provides
-//! a system call interface to non-volatile storage.
+//! This provides one component, ProcessLoaderComponent, which provides
+//! a system call interface to DynamicProcessLoader.
 //!
-//! Usage
-//! -----
-//! ```rust
-//! let nonvolatile_storage = components::nonvolatile_storage::NonvolatileStorageComponent::new(
+//! let dynamic_process_loader = components::dyn_process_loader::ProcessLoaderComponent::new(
+//!     &mut PROCESSES,
 //!     board_kernel,
-//!     &sam4l::flashcalw::FLASH_CONTROLLER,
-//!     0x60000,
-//!     0x20000,
-//!     &_sstorage as *const u8 as usize,
-//!     &_estorage as *const u8 as usize,
+//!     chip,
+//!     // kernel::process_load_utilities::DRIVER_NUM,
+//!     core::slice::from_raw_parts(
+//!         &_sapps as *const u8,
+//!         &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+//!     ), 
+//!     &base_peripherals.nvmc,
+//!     &FAULT_RESPONSE,
 //! )
-//! .finalize(components::nonvolatile_storage_component_static!(
-//!     sam4l::flashcalw::FLASHCALW
+//! .finalize(components::process_loader_component_static!(
+//!     nrf52840::nvmc::Nvmc,
+//!     nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>, 
 //! ));
 //! ```
 
 use kernel::process_load_utilities::DynamicProcessLoader;
 use capsules_extra::nonvolatile_to_pages::NonvolatileToPages;
 use core::mem::MaybeUninit;
-// use kernel::capabilities;
 use kernel::component::Component;
-// use kernel::create_capability;
 use kernel::hil;
 use kernel::process;
 use kernel::process::ProcessFaultPolicy;

@@ -912,25 +912,6 @@ pub unsafe fn main() {
     // Dynamic App Load (OTA)
     //-------------------------------------------------------------------------
 
-
-    // let dynamic_process_loader = static_init!(
-    //     kernel::process_load_utilities::DynamicProcessLoader<
-    //         nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
-    //     >,
-    //     kernel::process_load_utilities::DynamicProcessLoader::new(
-            // &mut PROCESSES,
-            // board_kernel,
-            // chip,
-            // kernel::process_load_utilities::DRIVER_NUM,
-            // core::slice::from_raw_parts(
-            //     &_sapps as *const u8,
-            //     &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
-            // ), 
-            // &base_peripherals.nvmc,
-            // &FAULT_RESPONSE,
-    //     )
-    // ); 
-
     let dynamic_process_loader = components::dyn_process_loader::ProcessLoaderComponent::new(
         &mut PROCESSES,
         board_kernel,
@@ -948,8 +929,6 @@ pub unsafe fn main() {
         nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>, 
     ));
 
-    debug!("Created a dynamic_process_loader instance");
-
     //--------------------------------------------------------------------------
     // Dynamic App Load (OTA)
     //--------------------------------------------------------------------------
@@ -961,7 +940,6 @@ pub unsafe fn main() {
         )
         .finalize(components::app_loader_component_static!());
 
-    debug!("Created a dynamic_app_loader instance");
 
     //--------------------------------------------------------------------------
     // PLATFORM SETUP, SCHEDULER, AND START KERNEL LOOP

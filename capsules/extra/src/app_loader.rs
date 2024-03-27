@@ -1,6 +1,6 @@
 // Licensed under the Apache License, Version 2.0 or the MIT License.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-// Copyright Tock Contributors 2022.
+// Copyright Tock Contributors 2024.
 
 //! This capsule provides an interface between a dynamic loading userspace 
 //! app and the kernel.
@@ -27,13 +27,13 @@
 //! |               capsules::app_loader::AppLoader (this)            |
 //! |                                                                 |
 //! +-----------------------------------------------------------------+
-//!            hil::nonvolatile_storage::NonvolatileStorage
 //!        kernel::process_load_utilities::DynamicProcessLoading
 //! +-----------------------------------------------------------------+
 //! |                                                                 |
 //! |               Kernel  | Physical Nonvolatile Storage            |
 //! |                                                                 |
 //! +-----------------------------------------------------------------+
+//!             hil::nonvolatile_storage::NonvolatileStorage
 //! ```
 //!
 //! Example instantiation:
@@ -47,7 +47,7 @@
 //!     dynamic_process_loader,
 //!     ).finalize(components::app_loader_component_static!());
 //!
-//! NOTE: This implementation currently only loads new apps. It does not perhaps update apps. That remains to be tested.
+//! NOTE: This implementation currently only loads new apps. It does not update apps. That remains to be tested.
 //! ```
 
 use core::cell::Cell;
@@ -59,7 +59,6 @@ use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::{ErrorCode, ProcessId};
 use kernel::process_load_utilities;
-use kernel::debug;
 
 /// Syscall driver number.
 use capsules_core::driver;
@@ -97,11 +96,12 @@ pub enum NonvolatileCommand {
     UserspaceWrite,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub enum NonvolatileUser {
     App { processid: ProcessId },
 }
 
+// struct to store pending commands for future execution
 pub struct App {
     pending_command: bool,
     command: NonvolatileCommand,
@@ -176,10 +176,8 @@ impl<'a> AppLoader<'a> {
                 // is offset in the physical memory.
                 if length > self.new_app_length.get() || offset + length > self.new_app_length.get()
                 {
-                    debug!("Invalid Length!\n");
                     return Err(ErrorCode::INVAL);
                 }
-                debug!("offset: {}\n length: {}\n", offset, length);
             }
         }
 
@@ -219,7 +217,6 @@ impl<'a> AppLoader<'a> {
 
                                 // Need to copy bytes if this is a write!
                                 if command == NonvolatileCommand::UserspaceWrite {
-                                    debug!("userspace_write command matched");
                                     let _ = kernel_data
                                         .get_readonly_processbuffer(ro_allow::WRITE)
                                         .and_then(|write| {
@@ -232,8 +229,6 @@ impl<'a> AppLoader<'a> {
                                                     let write_len =
                                                         cmp::min(active_len, kernel_buffer.len());
 
-                                                    debug!("write len: {}", write_len);
-
                                                     let buf_data = &app_buffer[0..write_len];
                                                     for (i, c) in kernel_buffer[0..write_len]
                                                         .iter_mut()
@@ -245,7 +240,6 @@ impl<'a> AppLoader<'a> {
                                             })
                                         });
                                 }
-                                // debug!("Pending command: {:?}, offset: {:?}, length: {:?}, pid: {:?}", app.pending_command, offset, length, processid);
                                 Ok((app.pending_command ,offset, length, processid))   
                              } 
                             else {  
@@ -260,7 +254,8 @@ impl<'a> AppLoader<'a> {
                                     app.command = command;
                                     app.offset = offset;
                                     app.length = active_len;
-                                    Ok((app.pending_command, app.offset, app.length, processid))   //pending command is true, so the process loader won't do anything with it
+                                    //pending command is true, so the process loader won't do anything with it
+                                    Ok((app.pending_command, app.offset, app.length, processid))   
                                 }
                             }
                         })
@@ -303,11 +298,9 @@ impl<'a> AppLoader<'a> {
 impl kernel::process_load_utilities::DynamicProcessLoadingClient for AppLoader<'_>{
     fn app_data_write_done(&self, buffer: &'static mut [u8], length: usize) {
         // Switch on which user of this capsule generated this callback.
-        debug!("Received write done callback at the capsule.");
         self.current_user.take().map(|user| {
             match user {
                 NonvolatileUser::App { processid } => {
-                    // debug!("Ready to send upcall to userspace app.");
                     let _ = self.apps.enter(processid, move |_app, kernel_data| {
                         // Replace the buffer we used to do this write.
                         self.buffer.replace(buffer); 
@@ -335,8 +328,17 @@ impl SyscallDriver for AppLoader<'_> {
     ///
     /// - `0`: Return Ok(()) if this driver is included on the platform.
     /// - `1`: Request kernel to setup for loading app. 
-    /// - `2`: Request kernel to write app data to the nonvolatile_storage.
+    ///        - Returns appsize if the kernel has available space 
+    ///        - Returns ErrorCode::FAIL if the kernel is unable to allocate space for the new app
+    /// - `2`: Request kernel to write app data to the nonvolatile_storage. 
+    ///        - Returns Ok(()) when write is successful
+    ///        - Returns ErrorCode::INVAL when the app is violating bounds
+    ///        - Returns ErrorCode::FAIL when the write fails 
     /// - `3`: Request kernel to load app.
+    ///        - Returns Ok(()) when the process is successfully loaded
+    ///        - Returns ErrorCode::FAIL if:
+    ///            - The kernel is unable to create a process object for the application
+    ///            - The kernel fails to write a padding app (thereby potentially breaking the linkedlist) 
 
     fn command(
         &self,
@@ -350,12 +352,11 @@ impl SyscallDriver for AppLoader<'_> {
 
             1 => {
                 //setup phase
-                // debug!("matched command 1");
+
                 let res = self.driver.setup(arg1);     // pass the size of the app to the setup function
                 match res {
                     Ok(app_len) => {
                         self.new_app_length.set(app_len);
-                        debug!("Setup successful for app length: {}\n", app_len);
                         CommandReturn::success()
                     },
                     
@@ -364,7 +365,7 @@ impl SyscallDriver for AppLoader<'_> {
             }
 
             2 => {
-                // Issue a write command to the kernel
+                // Request kernel to write app to flash
 
                 let res = self.enqueue_command(
                     NonvolatileCommand::UserspaceWrite, 
@@ -373,7 +374,6 @@ impl SyscallDriver for AppLoader<'_> {
                     Some(processid));
                 match res {
                     Ok((flag, offset, len, pid)) => {
-                        // debug!("Sending write request to kernel");
                         let result = self.buffer.take().map_or(Err(ErrorCode::RESERVE), |buffer|{
                             let res = self.driver.write_app_data(flag, buffer, offset, len, pid);
                             match res {
@@ -392,20 +392,15 @@ impl SyscallDriver for AppLoader<'_> {
 
             3 => {
                 // Request kernel to load the new app
+
                 let res = self.driver.load();
                 match res {
                     Ok(()) => {
                         self.new_app_length.set(0); // reset the app length
-                        // App::default();
-                        // self.current_user.take();
-                        // debug!("Current User: {:?}", self.current_user.get());
                         CommandReturn::success()
                     }
                     Err(e) => {
                         self.new_app_length.set(0); // reset the app length
-                        // App::default();
-                        // self.current_user.take();        // this breaks the code
-                        // debug!("Current User: {:?}", self.current_user.get());
                         CommandReturn::failure(e)
                     }
                 }

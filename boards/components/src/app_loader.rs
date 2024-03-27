@@ -1,26 +1,22 @@
 // Licensed under the Apache License, Version 2.0 or the MIT License.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-// Copyright Tock Contributors 2022.
+// Copyright Tock Contributors 2024.
 
-//! Component for non-volatile storage Drivers.
+//! Component for Dynamic App Loading Drivers.
 //!
 //! This provides one component, NonvolatileStorageComponent, which provides
 //! a system call interface to non-volatile storage.
 //!
-//! Usage
-//! -----
+//! Example instantiation:
+//!
 //! ```rust
-//! let nonvolatile_storage = components::nonvolatile_storage::NonvolatileStorageComponent::new(
+//! # use kernel::static_init;
+//!
+//! let dynamic_app_loader = components::app_loader::AppLoaderComponent::new(
 //!     board_kernel,
-//!     &sam4l::flashcalw::FLASH_CONTROLLER,
-//!     0x60000,
-//!     0x20000,
-//!     &_sstorage as *const u8 as usize,
-//!     &_estorage as *const u8 as usize,
-//! )
-//! .finalize(components::nonvolatile_storage_component_static!(
-//!     sam4l::flashcalw::FLASHCALW
-//! ));
+//!     capsules_extra::app_loader::DRIVER_NUM,
+//!     dynamic_process_loader,
+//!     ).finalize(components::app_loader_component_static!());
 //! ```
 
 use capsules_extra::app_loader::AppLoader;
@@ -47,7 +43,7 @@ macro_rules! app_loader_component_static {
 pub struct AppLoaderComponent{
     board_kernel: &'static kernel::Kernel,
     driver_num: usize,
-    driver2: &'static dyn process_load_utilities::DynamicProcessLoading,
+    driver: &'static dyn process_load_utilities::DynamicProcessLoading,
 }
 
 impl AppLoaderComponent
@@ -55,12 +51,12 @@ impl AppLoaderComponent
     pub fn new(
         board_kernel: &'static kernel::Kernel,
         driver_num: usize,
-        driver2: &'static dyn process_load_utilities::DynamicProcessLoading,
+        driver: &'static dyn process_load_utilities::DynamicProcessLoading,
     ) -> Self {
         Self {
             board_kernel,
             driver_num,
-            driver2,
+            driver,
         }
     }
 }
@@ -82,10 +78,10 @@ impl Component for AppLoaderComponent
 
         let dynamic_app_loader = static_buffer.0.write(AppLoader::new(
             self.board_kernel.create_grant(self.driver_num, &grant_cap),
-            self.driver2,
+            self.driver,
             buffer,
         ));
-        kernel::process_load_utilities::DynamicProcessLoading::set_client(self.driver2, dynamic_app_loader);
+        kernel::process_load_utilities::DynamicProcessLoading::set_client(self.driver, dynamic_app_loader);
         dynamic_app_loader
 
     }

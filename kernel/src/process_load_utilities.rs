@@ -1,4 +1,19 @@
+// Licensed under the Apache License, Version 2.0 or the MIT License.
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+// Copyright Tock Contributors 2024.
+
 //! Dynamic Process Loader for OTA application loads and updates
+//! Example instantiation:
+//!
+//! ```rust
+//! # use kernel::static_init;
+//!
+//! let dynamic_app_loader = components::app_loader::AppLoaderComponent::new(
+//!     board_kernel,
+//!     capsules_extra::app_loader::DRIVER_NUM,
+//!     dynamic_process_loader,
+//!     ).finalize(components::app_loader_component_static!());
+//! ```
 
 use core::cell::Cell;
 use core::cmp;
@@ -9,7 +24,7 @@ use crate::debug;
 use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::process::ProcessId;
-use crate::process::{self, Process};
+use crate::process::{self};
 use crate::process_loading::ProcessLoadError;
 use crate::process_policies::ProcessFaultPolicy;
 use crate::process_standard::ProcessStandard;
@@ -17,11 +32,12 @@ use crate::utilities::cells::{MapCell, OptionalCell, TakeCell};
 use crate::ErrorCode;
 use crate::hil::nonvolatile_storage::{NonvolatileStorage, NonvolatileStorageClient};
 
-pub const BUF_LEN: usize = 512;    
-const MAX_PROCS: usize = 10; // ;    //need this to compute padding.
 const TBF_HEADER_LENGTH: usize = 16;
+pub const BUF_LEN: usize = 512;    
+const MAX_PROCS: usize = 10;            //need this to store the start addresses of processes to write padding
+
          
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum NonvolatileCommand {
     UserspaceRead,
     UserspaceWrite,
@@ -70,10 +86,13 @@ pub trait DynamicProcessLoading {
 
     /// Sets a client for the DynamicProcessLoading Object
     ///
-    /// When the client operation is done, it calls the app_data_write_done() function
+    /// When the client operation is done, it calls the 
+    /// app_data_write_done(&self, buffer: &'static mut [u8], length: usize) function
     fn set_client(&self, client: &'static dyn DynamicProcessLoadingClient);
 }
 
+/// The callback for set_client(&self, Client). 
+/// The client capsule should implement this trait to handle the callback logic
 pub trait DynamicProcessLoadingClient{
     fn app_data_write_done(&self, buffer: &'static mut [u8], length: usize);
 }
@@ -94,7 +113,6 @@ pub struct DynamicProcessLoader<'a, C: 'static + Chip> {
     new_app_length: Cell<usize>,
     client: OptionalCell<&'static dyn DynamicProcessLoadingClient>,
     current_user: OptionalCell<NonvolatileUser>,
-    kernel_client_callback: Cell<bool>,
 }
 
 impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
@@ -123,7 +141,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
             new_app_length: Cell::new(0),
             client: OptionalCell::empty(),
             current_user: OptionalCell::empty(),
-            kernel_client_callback: Cell::new(false),
         }
     }
 
@@ -139,6 +156,7 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
         self.flash_end.set(flash_end);
     }
 
+    // Function to find the next available slot in the processes array
     fn find_open_process_slot(&self) -> Option<usize> {
         self.procs.map_or(None, |procs| {
             for (i, p) in procs.iter().enumerate() {
@@ -163,355 +181,333 @@ impl<'a, C: 'static + Chip> DynamicProcessLoader<'a, C> {
         offset: usize,
         length: usize,
     ) -> Result<(), ErrorCode> {
-        // Do bounds check.
-        if !padding_flag {                  //perform this bounds check if it is not a padding header because it comes from the user application
+        //perform this bounds check if it is not a padding header because it comes from the user application
+        if !padding_flag {                  
             match command {
                 NonvolatileCommand::UserspaceRead | NonvolatileCommand::UserspaceWrite => {
                     if offset >= self.new_app_start_addr.get()
                         || length > self.new_app_length.get()
                         || offset + length > self.new_app_length.get()
                     {
-                        debug!("Invalid bounds!\n");
                         return Err(ErrorCode::INVAL);
                     }
-                    debug!("offset: {}\n length: {}\n", offset, length);
                 }
             }
         }
 
-        debug!("userspace call driver about to be called");
-        self.userspace_call_driver(padding_flag, command, user_buffer, offset, length)
-    }
-
-    fn userspace_call_driver(
-        &self,
-        padding_flag: bool,
-        command: NonvolatileCommand,
-        user_buffer: &'static mut [u8],
-        offset: usize,
-        length: usize,
-    ) -> Result<(), ErrorCode> {
-        // Calculate where we want to actually read from in the physical
-        // storage.
+        // Calculate where we want to actually read from in the physical storage.
         let physical_address:usize;
         if !padding_flag{
-            physical_address = offset + self.new_app_start_addr.get();
-        }
+            physical_address = offset + self.new_app_start_addr.get();  // this offset comes from the app, so it starts from zero. 
+                                                                        // thererfore we need to add the physical address of the new app 
+        }                                                               // for each write
         else{
-            physical_address = offset;
+            physical_address = offset;                                  // for padding, the kernel passes the address, so no need to add an offset
         }
 
-        debug!("physical address for write: {}\n", physical_address);
         let active_len = cmp::min(length, user_buffer.len());
-                debug!("active length: {}\n", active_len);
 
-                match command {
-                    NonvolatileCommand::UserspaceRead => {
-                        self.driver.read(user_buffer, physical_address, active_len)
-                    }
-                    NonvolatileCommand::UserspaceWrite => {
-                        debug!("writing to flash\n");
-                        self.driver.write(user_buffer, physical_address, active_len)
-                    }
-                    _ => Err(ErrorCode::FAIL),
-                }
-    }
-
- /******************************************* Process Load Stuff **********************************************************/
-
-    fn check_for_padding_app(&self, new_app: &mut NewApp) -> Result<bool, ProcessLoadError> {
-        //We only need tbf header information to get the size of app which is already loaded
-        let header_info = unsafe { core::slice::from_raw_parts(new_app.start_addr as *const u8, 8) };
-
-        // let header_info = self.flash.get().get(start_addr..start_addr+8);
-
-        let test_header_slice = match header_info.get(0..8) {
-            Some(s) => s,
-            None => {
-                // Not enough flash to test for another app. This just means
-                // We are at the end of flash (0x80000). => This case is Error!
-                // But we can't reach out to here in this while statement!
-                return Err(ProcessLoadError::InternalError);
+        match command {
+            NonvolatileCommand::UserspaceRead => {
+                self.driver.read(user_buffer, physical_address, active_len) // change this to no support error code?
             }
-        };
-
-        // Pass the first eight bytes to tbfheader to parse out the length of
-        // the tbf header and app. We then use those values to see if we have
-        // enough flash remaining to parse the remainder of the header.
-        let (version, header_length, _entry_length) =
-            match tock_tbf::parse::parse_tbf_header_lengths(
-                test_header_slice
-                    .try_into()
-                    .or(Err(ProcessLoadError::InternalError))?,
-            ) {
-                Ok((v, hl, el)) => (v, hl, el),
-                Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(_entry_length)) => {
-                    // If we could not parse the header, then we want to skip over
-                    // this app and look for the next one.
-                    return Err(ProcessLoadError::InternalError);
-                }
-                Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
-                    // Since Tock apps use a linked list, it is very possible the
-                    // header we started to parse is intentionally invalid to signal
-                    // the end of apps. This is ok and just means we have finished
-                    // loading apps.
-                    return Ok(false);
-                }
-            };
-
-        //If a padding app is exist at the start address satisfying MPU rules, we load the new app from here!
-        let header_flash =
-            unsafe { core::slice::from_raw_parts(new_app.start_addr as *const u8, header_length as usize) };
-
-        // let header_flash =  self.flash.get().get(new_app.start_addr..header_length as usize);
-
-        let tbf_header = tock_tbf::parse::parse_tbf_header(header_flash, version)?;
-
-        // If this isn't an app (i.e. it is padding)
-        if !tbf_header.is_app() {
-            return Ok(true);
+            NonvolatileCommand::UserspaceWrite => {
+                self.driver.write(user_buffer, physical_address, active_len)
+            }
+            _ => Err(ErrorCode::FAIL),
         }
-
-        return Ok(false);
-    }
-
-    fn check_for_empty_flash_region(&self, new_app: &mut NewApp) -> Result<(bool, usize), ProcessLoadError> {
-        //We only need tbf header information to get the size of app which is already loaded
-        let header_info = unsafe { core::slice::from_raw_parts(new_app.start_addr as *const u8, 8) };
-
-        let test_header_slice = match header_info.get(0..8) {
-            Some(s) => s,
-            None => {
-                // Not enough flash to test for another app. This just means
-                // We are at the end of flash (0x80000). => This case is Error!
-                // But we can't reach out to here in this while statement!
-                return Err(ProcessLoadError::NotEnoughFlash);
-            }
-        };
-
-        let (_version, _header_length, entry_length) =
-            match tock_tbf::parse::parse_tbf_header_lengths(
-                test_header_slice
-                    .try_into()
-                    .or(Err(ProcessLoadError::InternalError))?,
-            ) {
-                Ok((v, hl, el)) => (v, hl, el),
-                Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(_entry_length)) => {
-                    // If we could not parse the header, then we want to skip over
-                    // this app and look for the next one.
-                    return Err(ProcessLoadError::InternalError);
-                }
-                Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
-                    // Since Tock apps use a linked list, it is very possible the
-                    // header we started to parse is intentionally invalid to signal
-                    // the end of apps. This is ok and just means we have finished
-                    // loading apps.
-                    // This case points to a viable start_addr satisfying MPU rules for an new app
-                    return Ok((true, 0));
-                }
-            };
-        return Ok((false, entry_length as usize)); // this means there is something here, and we need to check if it is a remnant app
-    }
-
-    // check if our new app overlaps with existing apps
-    fn check_overlap_region(
-        &self,
-        new_app: &mut NewApp,
-    ) -> Result<(), (usize, ProcessLoadError)>{
-        
-        let new_process_count = self.find_open_process_slot().unwrap_or_default();  // should never default because we have at least the OTA helper app running
-        let new_process_start_address = new_app.start_addr;
-        let new_process_end_address = new_app.start_addr + new_app.size - 1;
-
-        self.procs.map(|procs| {
-            for (proc_index, value) in procs.iter().enumerate(){
-                while proc_index < new_process_count{
-
-                    let process_start_address = value.unwrap().get_addresses().flash_start;
-                    let process_end_address = value.unwrap().get_addresses().flash_end;
-
-                    //debug!("process_start_address, process_end_address, {:#010X} {:#010X}", process_start_address, process_end_address);
-                    //debug!("new_process_start_address, new_process_end_address, {:#010X} {:#010X}", new_process_start_address, new_process_end_address);
-
-                    if new_process_end_address >= process_start_address && new_process_end_address <= process_end_address          
-                    {
-                        /* Case 1
-                        *              _________________          _______________           _________________
-                        *  ___________|__               |        |              _|_________|__               |
-                        * |           |  |              |        |             | |         |  |              |
-                        * |   new app |  |  app2        |   or   |   app1      | | new app |  |  app2        | 
-                        * |___________|__|              |        |             |_|_________|__|              |
-                        *             |_________________|        |_______________|         |_________________|
-                        * 
-                        * ^...........^                                           ^........^
-                        * In this case, we discard this region and try to find another start address from the end address + 1 of app2
-                        */
-                        return Err((process_end_address + 1, ProcessLoadError::NotEnoughFlash));
-                    }
-
-                    else if new_process_start_address >= process_start_address && new_process_start_address <= process_end_address
-                    {
-                        /* Case 2
-                        *              _________________
-                        *  ___________|__               |    _______________
-                        * |           |  |              |   |               |
-                        * |   app2    |  |  new app     |   |     app3      |         
-                        * |___________|__|              |   |_______________|
-                        *             |_________________|
-                        * 
-                        *                 ^
-                        *                 | In this case, the start address of new app is replaced by 'the end address + 1' of app2, 
-                        *                   and we try to find another start address from the end address + 1 of app2 and recheck for 
-                        *                   the previous condition
-                        */
-                        return Err((process_end_address + 1, ProcessLoadError::NotEnoughFlash));
-                    }
-                }
-            }
-            return Ok(());
-        });   
-        return Ok(());
-    }
-
-    fn find_next_available_address(&self,
-        new_app: &mut NewApp) -> Result<(), ProcessLoadError>{
-
-        while new_app.start_addr < self.flash_end.get(){
-            let mut is_padding_app: bool = false;
-            let mut is_empty_region: bool = false;
-            let mut is_remnant_region: bool = true;
-
-            //TODO: Check if it is a newer version of an existing app. 
-            // We should then potentially erase the old app information and flash the new app before loading it.
-
-            let padding_result = self.check_for_padding_app(new_app);     //check if there is a padding app in that space
-            match padding_result{
-                Ok(padding_app)=>{
-                    if padding_app == true{
-                        is_padding_app = true;
-                    }
-                }
-                Err(_e) => {
-                    return Err(ProcessLoadError::InternalError);
-                }
-            }
-
-            let empty_result = self.check_for_empty_flash_region(new_app);       //check if the flash region is empty
-                match empty_result{
-                    Ok((empty_space, size))=>{
-                        if empty_space == true{
-                            is_empty_region = true;
-                        }
-                        else{
-                            let new_process_count = self.find_open_process_slot().unwrap_or_default();  // should never default because we have at least the OTA helper app running
-                            // check if there is a remnant app in that space
-                            self.procs.map(|procs| {
-                                for (proc_index, value) in procs.iter().enumerate(){
-                                    while proc_index < new_process_count{
-                                    {
-                                        if new_app.start_addr == value.unwrap().get_addresses().flash_start
-                                            {
-                                            is_remnant_region = false;  //indicates there is an active process whose binary is loaded here
-                                            break;
-                                            }
-                                    }
-                                }
-                            }
-                            });
-
-                            // Because there is an app which is also an active process, we move to the next address 
-                            if is_remnant_region == false
-                            {   
-                                // Jump to the maximum length based on power of 2
-                                new_app.start_addr += cmp::max(new_app.size, size);
-                            }
-                        }
-                    }
-                    Err(_e) => {
-                        return Err(ProcessLoadError::InternalError);
-                    }
-                }
-            
-            if is_padding_app == true || is_empty_region == true{
-                let address_validity_check = self.check_overlap_region(new_app);
-
-                    match address_validity_check{
-                        Ok(()) => {
-                            return Ok(());
-                        }
-                        Err((new_start_addr, _e)) => {
-                            // We try again from the end of the overlapping app
-                            new_app.start_addr = new_start_addr;
-                        }
-                    }
-                    return Ok(());
-            }
-        }
-        return Err(ProcessLoadError::NotEnoughFlash);
     }
 
     fn write_padding_app(&self, 
         padding_app_length: usize,
         offset: usize,
-        version: u16,
-        padding_header_len: usize,)
+        version: u16,)
         -> Result<(), ErrorCode>{
 
-        debug!("Kernel client callback: {:?}", self.kernel_client_callback.get());
+        // write the header into the array
+        self.buffer.map(|buffer|{
+            //first two bytes are the kernel version
+            buffer[0] = (version & 0xff) as u8;
+            buffer[1] = ((version >> 8) & 0xff) as u8;
 
-        debug!("Flash offset: {:?}", offset);
-        // if offset == current_process_end_addr {
-            debug!("First iteration padding");
-            self.buffer.map(|buffer|{
-                // write the header into the array
+            // the next two bytes are the header length (fixed to 16 bytes for padding)
+            buffer[2] = (TBF_HEADER_LENGTH & 0xff) as u8;
+            buffer[3] = ((TBF_HEADER_LENGTH >> 8) & 0xff) as u8;
+            
+            // the next 4 bytes are the total app length including the header
+            buffer[4] = (padding_app_length & 0xff) as u8;
+            buffer[5] = ((padding_app_length >> 8) & 0xff) as u8;
+            buffer[6] = ((padding_app_length >> 16) & 0xff) as u8;
+            buffer[7] = ((padding_app_length >> 24) & 0xff) as u8;
+            
+            // we set the flags to 0
+            for i in 8..12 {
+                buffer[i] = 0x00 as u8;
+            }
 
-                //first two bytes are the kernel version
-                buffer[0] = (version & 0xff) as u8;
-                buffer[1] = ((version >> 8) & 0xff) as u8;
+            // xor of the previous values
+            buffer[12] = buffer[0] ^ buffer[4] ^ buffer[8];
+            buffer[13] = buffer[1] ^ buffer[5] ^ buffer[9];
+            buffer[14] = buffer[2] ^ buffer[6] ^ buffer[10];
+            buffer[15] = buffer[3] ^ buffer[7] ^ buffer[11];
 
-                // the next two bytes are the header length
-                buffer[2] = (padding_header_len & 0xff) as u8;
-                buffer[3] = ((padding_header_len >> 8) & 0xff) as u8;
-                
-                // the next 4 bytes are the total app length including the header
-                buffer[4] = (padding_app_length & 0xff) as u8;
-                buffer[5] = ((padding_app_length >> 8) & 0xff) as u8;
-                buffer[6] = ((padding_app_length >> 16) & 0xff) as u8;
-                buffer[7] = ((padding_app_length >> 24) & 0xff) as u8;
-                
-                // we set the flags to 0
-                for i in 8..12 {
-                    buffer[i] = 0x00 as u8;
-                }
+            for i in 16..BUF_LEN{
+                buffer[i] = 0xff as u8;     //creating the padding (probably unnecessary)
+            }
+        });
 
-                // xor of the previous values
-                buffer[12] = buffer[0] ^ buffer[4] ^ buffer[8];
-                buffer[13] = buffer[1] ^ buffer[5] ^ buffer[9];
-                buffer[14] = buffer[2] ^ buffer[6] ^ buffer[10];
-                buffer[15] = buffer[3] ^ buffer[7] ^ buffer[11];
-
-                for i in 16..BUF_LEN{
-                    buffer[i] = 0xff as u8;     //creating the padding
-                }
-            });
-        // currently fails in writing padding because buffer is not released by the time it comes back for the next iteration
-        let result = self.buffer.take().map_or(Err(ErrorCode::RESERVE), |buffer|{
-            let res = self.enqueue_command(
-                true,                                   //let the function know that this is the padding header being written
-                NonvolatileCommand::UserspaceWrite, 
-                buffer,
-                offset,
-                BUF_LEN,);
-            match res {
-                    Ok(()) => Ok(()),
-                    Err(e) => Err(e),
-                }
+        self.current_user.set(NonvolatileUser::Kernel);
+        let result = self.buffer.take().map_or(Err(ErrorCode::BUSY), |buffer|{
+            if self.flash_end.get() - offset >= TBF_HEADER_LENGTH{  //write the header only if there are more than 16 bytes available in the flash
+                let res = self.enqueue_command(
+                    true,                                   //let the function know that this is the padding header being written
+                    NonvolatileCommand::UserspaceWrite, 
+                    buffer,
+                    offset,
+                    TBF_HEADER_LENGTH,);        //we are only writing the header, so 16 bytes is enough
+                match res {
+                        Ok(()) => Ok(()),
+                        Err(e) => Err(e),
+                    }
+            }
+            else{
+                Err(ErrorCode::NOMEM) // this means we do not have even 16 bytes to write the header
+            }
             });
         match result{
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         }
     }
+
+ /******************************************* Process Load Stuff **********************************************************/
+
+ fn check_for_padding_app(&self, new_app: &mut NewApp) -> Result<bool, ProcessLoadError> {
+    //We only need tbf header information to get the size of app which is already loaded
+    let header_info = unsafe { core::slice::from_raw_parts(new_app.start_addr as *const u8, 8) };
+
+    // let header_info = self.flash.get().get(start_addr..start_addr+8);
+
+    let test_header_slice = match header_info.get(0..8) {
+        Some(s) => s,
+        None => {
+            // Not enough flash to test for another app. This just means
+            // We are at the end of flash (0x80000).
+            return Err(ProcessLoadError::InternalError);
+        }
+    };
+
+    // Pass the first eight bytes to tbfheader to parse out the length of
+    // the tbf header and app. We then use those values to see if we have
+    // enough flash remaining to parse the remainder of the header.
+    let (version, header_length, _entry_length) =
+        match tock_tbf::parse::parse_tbf_header_lengths(
+            test_header_slice
+                .try_into()
+                .or(Err(ProcessLoadError::InternalError))?,
+        ) {
+            Ok((v, hl, el)) => (v, hl, el),
+            Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(_entry_length)) => {
+                // If we could not parse the header, then we want to skip over
+                // this app and look for the next one.
+                return Err(ProcessLoadError::InternalError);
+            }
+            Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
+                // Since Tock apps use a linked list, it is very possible the
+                // header we started to parse is intentionally invalid to signal
+                // the end of apps. This is ok and just means we have finished
+                // loading apps.
+                return Ok(false);
+            }
+        };
+
+    //If a padding app is exist at the start address satisfying MPU rules, we load the new app from here!
+    let header_flash =
+        unsafe { core::slice::from_raw_parts(new_app.start_addr as *const u8, header_length as usize) };
+
+    // let header_flash =  self.flash.get().get(new_app.start_addr..header_length as usize);
+
+    let tbf_header = tock_tbf::parse::parse_tbf_header(header_flash, version)?;
+
+    // If this isn't an app (i.e. it is padding)
+    if !tbf_header.is_app() {
+        return Ok(true);
+    }
+
+    return Ok(false);
+}
+
+fn check_for_empty_flash_region(&self, new_app: &mut NewApp) -> Result<(bool, usize), ProcessLoadError> {
+    //We only need tbf header information to get the size of app which is already loaded
+    let header_info = unsafe { core::slice::from_raw_parts(new_app.start_addr as *const u8, 8) };
+
+    let test_header_slice = match header_info.get(0..8) {
+        Some(s) => s,
+        None => {
+            // Not enough flash to test for another app. This just means
+            // We are at the end of flash (0x80000). 
+            return Err(ProcessLoadError::NotEnoughFlash);
+        }
+    };
+
+    let (_version, _header_length, entry_length) =
+        match tock_tbf::parse::parse_tbf_header_lengths(
+            test_header_slice
+                .try_into()
+                .or(Err(ProcessLoadError::InternalError))?,
+        ) {
+            Ok((v, hl, el)) => (v, hl, el),
+            Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(_entry_length)) => {
+                // If we could not parse the header, then we want to skip over
+                // this app and look for the next one.
+                return Err(ProcessLoadError::InternalError);
+            }
+            Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
+                // Since Tock apps use a linked list, it is very possible the
+                // header we started to parse is intentionally invalid to signal
+                // the end of apps. This is ok and just means we have finished
+                // loading apps.
+                // This points to a viable start address for a new app such that it satisfies MPU rules
+                return Ok((true, 0));
+            }
+        };
+    return Ok((false, entry_length as usize)); // this means there is some data here, and we need to check if it is a remnant application
+}
+
+// check if our new app overlaps with existing apps
+fn check_overlap_region(
+    &self,
+    new_app: &mut NewApp,
+) -> Result<(), (usize, ProcessLoadError)>{
+    
+    let new_process_count = self.find_open_process_slot().unwrap_or_default();  // find the next open process slot
+    let new_process_start_address = new_app.start_addr;
+    let new_process_end_address = new_app.start_addr + new_app.size - 1;
+
+    self.procs.map(|procs| {
+        for (proc_index, value) in procs.iter().enumerate(){
+            if proc_index < new_process_count{
+
+                let process_start_address = value.unwrap().get_addresses().flash_start;
+                let process_end_address = value.unwrap().get_addresses().flash_end;
+
+                if new_process_end_address >= process_start_address && new_process_end_address <= process_end_address          
+                {
+                    /* Case 1
+                    *              _________________          _______________           _________________
+                    *  ___________|__               |        |              _|_________|__               |
+                    * |           |  |              |        |             | |         |  |              |
+                    * |   new app |  |  app2        |   or   |   app1      | | new app |  |  app2        | 
+                    * |___________|__|              |        |             |_|_________|__|              |
+                    *             |_________________|        |_______________|         |_________________|
+                    * 
+                    * ^...........^                                           ^........^
+                    * In this case, we discard this region and try to find another start address from the end address + 1 of app2
+                    */
+                    return Err((process_end_address + 1, ProcessLoadError::NotEnoughFlash));
+                }
+
+                else if new_process_start_address >= process_start_address && new_process_start_address <= process_end_address
+                {
+                    /* Case 2
+                    *              _________________
+                    *  ___________|__               |    _______________
+                    * |           |  |              |   |               |
+                    * |   app2    |  |  new app     |   |     app3      |         
+                    * |___________|__|              |   |_______________|
+                    *             |_________________|
+                    * 
+                    *                 ^
+                    *                 | In this case, the start address of new app is replaced by 'the end address + 1' of app2, 
+                    *                   and we try to find another start address from the end address + 1 of app2 and recheck for 
+                    *                   the previous condition
+                    */
+                    return Err((process_end_address + 1, ProcessLoadError::NotEnoughFlash));
+                }
+            }
+        }
+        return Ok(());
+    });   
+    return Ok(());
+}
+
+fn find_next_available_address(&self,
+    new_app: &mut NewApp) -> Result<(), ErrorCode>{
+
+    while new_app.start_addr < self.flash_end.get(){
+        let mut is_padding_app: bool = false;
+        let mut is_empty_region: bool = false;
+        let mut is_remnant_region: bool = true;
+        
+        let padding_result = self.check_for_padding_app(new_app);     //check if there is a padding app in that space
+        match padding_result{
+            Ok(padding_app)=>{
+                if padding_app == true{
+                    is_padding_app = true;
+                }
+            }
+            Err(_e) => {
+                return Err(ErrorCode::FAIL);
+            }
+        }
+
+        if !is_padding_app{ // we check for empty region only if we do not find a padding app
+            let empty_result = self.check_for_empty_flash_region(new_app);       //check if the flash region is empty
+            match empty_result{
+                Ok((empty_space, size))=>{
+                    if empty_space == true{
+                        is_empty_region = true;
+                    }
+                    else{
+                        let new_process_count = self.find_open_process_slot().unwrap_or_default();  // should never default because we have at least the OTA helper app running
+                        // check if there is a remnant app in that space
+                        self.procs.map(|procs| {
+                            for (proc_index, value) in procs.iter().enumerate(){
+                                if proc_index < new_process_count{
+                                {
+                                    
+                                    if new_app.start_addr == value.unwrap().get_addresses().flash_start  
+                                    {   // indicates there is an active process whose binary is stored here                                                                 
+                                        is_remnant_region = false;
+                                        // Because there is an app which is also an active process, we move to the next address
+                                        new_app.start_addr += cmp::max(new_app.size, size);                          
+                                    }
+                                }
+                            }
+                        }
+                        });
+                    }
+                }
+                Err(_e) => {
+                    return Err(ErrorCode::FAIL);
+                }
+            }
+        }
+        
+        
+        if is_padding_app == true || is_empty_region == true || is_remnant_region == true{
+            let address_validity_check = self.check_overlap_region(new_app);
+
+            match address_validity_check{
+                Ok(()) => {
+                    return Ok(());      // this means we have found the perfect address for our new app
+                }
+                Err((new_start_addr, _e)) => {
+                    // We try again from the end of the overlapping app
+                    new_app.start_addr = new_start_addr;
+                }
+            }
+
+            // despite doing all these, if the new app's start address and size make it such that it will
+            // cross the bounds of flash, we return a No Memory error. (this is currently untested)
+            if new_app.start_addr + (new_app.size - 1) > self.flash_end.get(){
+                return Err(ErrorCode::NOMEM);
+            }
+        }
+        return Ok(());
+    }
+    return Err(ErrorCode::NOMEM);
+}
 
 }
 
@@ -521,30 +517,26 @@ impl<'a, C: 'static + Chip> NonvolatileStorageClient for DynamicProcessLoader<'a
         unimplemented!();
     }
 
-    fn write_done(&self, buffer: &'static mut [u8], length: usize) {            // change it so the callback is issued to the capsule
+    fn write_done(&self, buffer: &'static mut [u8], length: usize) {     
         // Switch on which user generated this callback.
-        debug!("Received callback from NV Storage");
-
         self.current_user.take().map(|user|{
             match user{
                 NonvolatileUser::Client => {
+                    // trigger the client callback
                     self.client.map(|client| {
-                        debug!("issuing callback to client");
                         client.app_data_write_done(buffer, length);
                     }); 
                 }
                 NonvolatileUser::Kernel => {
-                    debug!("Kernel NV callback");
+                    // replace the buffer after the padding is written
                     self.buffer.replace(buffer);
-                    self.kernel_client_callback.set(true);
-                    debug!("Kernel Client Callback: {:?}", self.kernel_client_callback.get());
                 }
             }
         });
     }
 }
 
-// interface exposed to the app_loader capsule
+// Interface exposed to the app_loader capsule
 impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C> {
 
     fn set_client(&self, client: &'static dyn DynamicProcessLoadingClient){
@@ -552,6 +544,10 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
     }
 
     fn setup(&self, app_length: usize) -> Result<usize, ErrorCode> {
+
+        //TODO(?): Check if it is a newer version of an existing app. 
+        // We can potentially flash the new app and load it before erasing the old one.
+        // What happens to the process though? Need to delete it from the process array and load it back in?
 
         let mut new_app_data = NewApp{      // struct to hold some information about the new app
             size: 0,
@@ -585,14 +581,11 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                     new_app_data.size = 0;
                     new_app_data.start_addr = 0;
 
-                    debug!("Found next available address!");
-
                     Ok(app_length)
                 },   
             Err(_err) => 
             {
-                debug!("Failed to setup for new app.");
-                Ok(0)
+                Err(ErrorCode::FAIL)
             },
         }
     }
@@ -624,10 +617,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
         let process_flash = self.new_process_flash.take().ok_or(ErrorCode::FAIL)?;
         let remaining_memory = self.app_memory.take().ok_or(ErrorCode::FAIL)?;
 
-        debug!("index: {:?}", index);
-        // debug!("process_flash size: {:?}", process_flash.as_ptr().len());
-        // debug!("remaining_memory: {:?}", remaining_memory);
-
         // Get the first eight bytes of flash to check if there is another app.
         let test_header_slice = match process_flash.get(0..8) {
             Some(s) => s,
@@ -635,12 +624,9 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                 // Not enough flash to test for another app. This just means
                 // we are at the end of flash, and there are no more apps to
                 // load. => This case is error in loading app by ota_app, because it means that there is no valid tbf header!
-                debug!("Failed test_header_slice");
                 return Err(ErrorCode::FAIL);
             }
         };
-
-        debug!("test_header_slice: {:?}", test_header_slice);
 
         // Pass the first eight bytes to tbfheader to parse out the length of
         // the tbf header and app. We then use those values to see if we have
@@ -651,16 +637,14 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
             Ok((v, hl, el)) => (v, hl, el),
             Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(_entry_length)) => {
                 // If we could not parse the header, then we want to skip over
-                // this app and look for the next one. => This case is error in loading app by ota_app
-                debug!("check for entry length failed");
+                // this app and look for the next one. 
                 return Err(ErrorCode::FAIL);
             }
             Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
                 // Since Tock apps use a linked list, it is very possible the
                 // header we started to parse is intentionally invalid to signal
                 // the end of apps. This is ok and just means we have finished
-                // loading apps. => This case is error in loading app by ota_app
-                debug!("unable to parse header");
+                // loading apps. => 
                 return Err(ErrorCode::FAIL);
             }
         };
@@ -668,19 +652,9 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
         // Now we can get a slice which only encompasses the length of flash
         // described by this tbf header.  We will either parse this as an actual
         // app, or skip over this region.
-        // debug!("header parsed");
-        // debug!("header length: {}", header_length);
-        // debug!("entry length: {}", entry_length);
-
-        // debug!("process flash: {:?}", process_flash.as_ptr());
-        // debug!("process flash size: {}", process_flash.len());
-
         let entry_flash = process_flash
             .get(0..entry_length as usize)
             .ok_or(ErrorCode::FAIL)?;
-        
-        // debug!("entry_flash = process_flash");
-        // debug!("header length: {}", header_length);
 
         // Need to reassign remaining_memory in every iteration so the compiler
         // knows it will not be re-borrowed.
@@ -693,8 +667,6 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
             // Try to create a process object from that app slice. If we don't
             // get a process and we didn't get a loading error (aka we got to
             // this point), then the app is a disabled process or just padding.
-
-            // debug!("creating process");
 
             let process_option = unsafe {
                 let result = ProcessStandard::create(
@@ -720,7 +692,7 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                 }
             };
             process_option.map(|process| {
-                // if config::CONFIG.debug_load_processes {
+                if config::CONFIG.debug_load_processes {
                     let addresses = process.get_addresses();
                         debug!(
                         "Loaded process[{}] from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X} = {:?}",
@@ -731,7 +703,7 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                         addresses.sram_end - 1,
                         process.get_process_name()
                     );
-                // }
+                }
             });
 
             self.procs.map(|procs| procs[index] = process_option);
@@ -749,16 +721,14 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
                     }
                 });
             });
-            debug!("Added process to processes array");
 
             // reset the global new app start address and length values
             self.new_app_start_addr.set(0);    
             self.new_app_length.set(0);
 
-            // write padding app after the current process
-            
+            // write padding app after our new process
             let current_process_end_addr = entry_flash.as_ptr() as usize + entry_flash.len();   // the end address of our newly loaded application
-            let mut next_app_start_addr:usize = 0;      // value to store the address until which we need to write the padding app
+            let next_app_start_addr:usize;      // to store the address until which we need to write the padding app
 
             let mut processes_start_addresses: [usize; MAX_PROCS] = [0; MAX_PROCS];
 
@@ -783,36 +753,26 @@ impl<'a, C: 'static + Chip> DynamicProcessLoading for DynamicProcessLoader<'a, C
             if let Some(closest_neighbor) = processes_start_addresses.iter()
                                             .filter(|&&x| x as usize > current_process_end_addr)
                                             .min(){
-                                                next_app_start_addr = *closest_neighbor as usize;
-                                                debug!("Found the next closest app at {:?}", next_app_start_addr);
+                                                next_app_start_addr = *closest_neighbor as usize;   // we found the next closest app in flash
                                             }
             else{
-                next_app_start_addr = self.flash_end.get() as usize;
-                debug!("There are no more apps in flash. End of flash is: {:?}", next_app_start_addr);
+                next_app_start_addr = self.flash_end.get() as usize;    // there are no more apps in flash, so we write padding until the end of flash
+                                                                        // should the padding be added only when there are other apps?
             }
             
-            let padding_app_length = next_app_start_addr - current_process_end_addr;    // calculating the distance between our app and 
-                                                                                            // either the next app, or the end of the flash
-            debug!("padding_app_length: {:?}",padding_app_length);
+            // calculating the distance between our app and either the next app, or the end of the flash
+            let padding_app_length = next_app_start_addr - current_process_end_addr;    
 
-            // let offset:usize = current_process_end_addr;
-            self.current_user.set(NonvolatileUser::Kernel);
-            let padding_result = self.write_padding_app(padding_app_length, current_process_end_addr, 
-                                                        version, TBF_HEADER_LENGTH);
+            let padding_result = self.write_padding_app(padding_app_length, current_process_end_addr, version);
             match padding_result {
-                Ok(()) => {
-                        debug!("Padding app segment written");
-                }
+                Ok(()) => Ok(()),
                 Err(_err) => {   
-                        debug!("Error writing padding app");
-                    return Err(ErrorCode::FAIL);
+                    return Err(ErrorCode::FAIL);        // this means we were unable to write the padding app
                 }
             }
         } else {
             //header length 0 means invalid header
             return Err(ErrorCode::FAIL);
         }
-        self.current_user.set(NonvolatileUser::Client);    //switching the user back to the capsule
-        Ok(())
     }
 }
