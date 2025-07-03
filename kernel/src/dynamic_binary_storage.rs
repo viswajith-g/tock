@@ -37,6 +37,7 @@ pub enum State {
     Load,
     Abort,
     PaddingWrite,
+    Uninstall,
     Fail,
 }
 
@@ -87,6 +88,16 @@ pub trait DynamicBinaryStore {
     /// Call to abort the setup/writing process.
     fn abort(&self) -> Result<(), ErrorCode>;
 
+    /// Call to uninstall an existing application.
+    /// Ideally this function should kill an existing
+    /// instance of the app and then uninstall its 
+    /// contents from the flash. Only an app can 
+    /// request for itself to be uninstalled. 
+    ///
+    /// Allowing apps to uninstall other apps opens
+    /// a can of worms.
+    fn uninstall(&self) -> Result<(), ErrorCode>;
+
     /// Sets a client for the SequentialDynamicBinaryStore Object
     ///
     /// When the client operation is done, it calls the `setup_done()`,
@@ -108,6 +119,10 @@ pub trait DynamicBinaryStoreClient {
 
     /// Canceled any setup or writing operation and freed up reserved space.
     fn abort_done(&self, result: Result<(), ErrorCode>);
+
+    /// Removed the current instance of the app and erase its contents from 
+    /// storage.
+    fn uninstall_done(&self, result: Result<(), ErrorCode>);
 }
 
 /// This interface supports loading processes at runtime.
@@ -334,6 +349,45 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
             }
         })
     }
+
+    fn terminate_app(&self, pid: ProcessId) -> Result{
+        // Terminate the app
+        let mut matched = false;
+        self.kernel
+            .process_each_capability(&self.capability, |process| {
+                if process.processid().id() == pid {
+                    matched = true;
+                    process.terminate(None);
+                }
+                });
+        if matched {
+            Ok(())
+        } else {
+            Err(ErrorCode::FAIL)
+        }
+    }
+
+    fn uninstall_app(&self, pid: ProcessId){
+        // Remove app contents from storage
+
+        
+
+    }
+
+    fn terminate_and_uninstall(&self, pid: ProcessId){
+
+        // fetch the name of the app from the PID. 
+        //
+        // terminate the process and remove it from
+        // the process array.
+        //
+        // iterate over flash and find all existing
+        // apps with the name matching the PID
+        //
+        // look at their versions and then remove
+        // any app that is not the latest version
+        
+    }
 }
 
 impl<'b, C: Chip, D: ProcessStandardDebug, F: NonvolatileStorage<'b>> DeferredCallClient
@@ -428,6 +482,12 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
             }
             State::Idle => {
                 self.buffer.replace(buffer);
+            }
+            State::Terminate => {
+                self.buffer.replace(buffer);
+                self.storage_client.map(|client| {
+                    client.terminate_done(Ok(()));
+                })
             }
         }
     }
@@ -632,6 +692,22 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                 // here, but this error exists as a failsafe. The capsule should send
                 // a busy error out to the userland app.
                 Err(ErrorCode::INVAL)
+            }
+        }
+    }
+
+    fn uninstall(&self, pid: ProcessId) -> Result<(), ErrorCode> {
+        match self.state.get(){
+            State::Idle => {
+                self.state.set(State::Terminate);
+                match self.terminate_and_uninstall(pid){
+                    Ok(()) => Ok(()),
+                    Err(_) => Err(ErrorCode::FAIL)
+                }
+            }
+            // We are already performing the terminate operation.
+            State::Terminate => {
+                Err(ErrorCode::BUSY)
             }
         }
     }
