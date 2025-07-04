@@ -67,6 +67,7 @@
 
 use core::cell::Cell;
 use core::cmp;
+use kernel::debug;
 
 use kernel::dynamic_binary_storage;
 use kernel::errorcode::into_statuscode;
@@ -77,6 +78,9 @@ use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::{ErrorCode, ProcessId};
+// use kernel::hil::time::{self, Time, ConvertTicks};
+use kernel::hil::time::{Counter, Ticks};
+// use nrf52::timer;
 
 /// Syscall driver number.
 use capsules_core::driver;
@@ -116,6 +120,7 @@ pub struct App {
 pub struct AppLoader<
     S: dynamic_binary_storage::DynamicBinaryStore + 'static,
     L: dynamic_binary_storage::DynamicProcessLoad + 'static,
+    T: Counter<'static> + 'static,
 > {
     // The underlying driver for the process flashing and loading.
     storage_driver: &'static S,
@@ -133,12 +138,16 @@ pub struct AppLoader<
     // What issued the currently executing call.
     current_process: OptionalCell<ProcessId>,
     new_app_length: Cell<usize>,
+    /// Time provider.
+    timestamp: Cell<u32>,
+    timer: &'static T,
 }
 
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-    > AppLoader<S, L>
+        T: Counter<'static> + 'static,
+    > AppLoader<S, L, T>
 {
     pub fn new(
         grant: Grant<
@@ -150,7 +159,8 @@ impl<
         storage_driver: &'static S,
         load_driver: &'static L,
         buffer: &'static mut [u8],
-    ) -> AppLoader<S, L> {
+        timer: &'static T,
+    ) -> AppLoader<S, L, T> {
         AppLoader {
             apps: grant,
             storage_driver,
@@ -158,7 +168,25 @@ impl<
             buffer: TakeCell::new(buffer),
             current_process: OptionalCell::empty(),
             new_app_length: Cell::new(0),
+            timestamp: Cell::new(0),
+            timer,
         }
+    }
+
+    fn elapsed_time(&self) -> u32 {
+        let t2 = self.read_timer();
+        let t1 = self.timestamp.get();
+
+        debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+        self.timestamp.set(0);
+        let freq = 32768;
+        let elapsed_ticks = t2.wrapping_sub(t1);
+        elapsed_ticks * (1000000 / freq)
+    }
+
+    fn read_timer(&self) -> u32 {
+        let t1 = self.timer.now();
+        t1.into_u32()
     }
 
     /// Copy data from the shared buffer with app and request kernel to
@@ -236,7 +264,8 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-    > dynamic_binary_storage::DynamicBinaryStoreClient for AppLoader<S, L>
+        T: Counter<'static> + 'static,
+    > dynamic_binary_storage::DynamicBinaryStoreClient for AppLoader<S, L, T>
 {
     /// Let the requesting app know we are done setting up for the new app
     fn setup_done(&self, result: Result<(), ErrorCode>) {
@@ -244,6 +273,10 @@ impl<
         self.current_process.map(|processid| {
             let _ = self.apps.enter(processid, move |app, kernel_data| {
                 app.pending_command = false;
+
+                let elapsed = self.elapsed_time();
+                debug!("Elapsed time between setup and setup_done: {}us", elapsed);
+
                 // Signal the app.
                 kernel_data
                     .schedule_upcall(upcall::SETUP_DONE, (into_statuscode(result), 0, 0))
@@ -261,6 +294,15 @@ impl<
                 self.buffer.replace(buffer);
                 app.pending_command = false;
 
+                // let t2 = self.read_timer();
+                // let t1 = self.time.get();
+                // let elapsed = t2.wrapping_sub(t1);
+
+                // debug!("Elapsed ticks between write and write_done: {}", elapsed);
+
+                // let elapsed = self.elapsed_time();
+                // debug!("Elapsed time between write and write_done: {}us", elapsed);
+
                 // And then signal the app.
                 kernel_data
                     .schedule_upcall(upcall::WRITE_DONE, (into_statuscode(result), length, 0))
@@ -277,6 +319,13 @@ impl<
                 app.pending_command = false;
 
                 self.current_process.take();
+
+                let elapsed = self.elapsed_time();
+                debug!(
+                    "Elapsed time between write and finalize_done: {}us",
+                    elapsed
+                );
+
                 kernel_data
                     .schedule_upcall(upcall::FINALIZE_DONE, (into_statuscode(result), 0, 0))
                     .ok();
@@ -292,6 +341,10 @@ impl<
                 app.pending_command = false;
 
                 self.current_process.take();
+
+                let elapsed = self.elapsed_time();
+                debug!("Elapsed time between abort and abort_done: {}us", elapsed);
+
                 kernel_data
                     .schedule_upcall(upcall::ABORT_DONE, (into_statuscode(result), 0, 0))
                     .ok();
@@ -303,7 +356,8 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-    > dynamic_binary_storage::DynamicProcessLoadClient for AppLoader<S, L>
+        T: Counter<'static> + 'static,
+    > dynamic_binary_storage::DynamicProcessLoadClient for AppLoader<S, L, T>
 {
     /// Let the requesting app know we are done loading the new process
     ///
@@ -340,6 +394,10 @@ impl<
                 app.pending_command = false;
                 // Signal the app.
                 self.current_process.take();
+
+                let elapsed = self.elapsed_time();
+                debug!("Elapsed time between load and load_done: {}us", elapsed);
+
                 kernel_data
                     .schedule_upcall(upcall::LOAD_DONE, (into_statuscode(status_code), 0, 0))
                     .ok();
@@ -352,7 +410,8 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-    > SyscallDriver for AppLoader<S, L>
+        T: Counter<'static> + 'static,
+    > SyscallDriver for AppLoader<S, L, T>
 {
     /// Command interface.
     ///
@@ -436,6 +495,8 @@ impl<
             1 => {
                 // Request kernel to allocate resources for
                 // an app with size passed via `arg1`.
+                // self.time.set(self.read_timer());
+                self.timestamp.set(self.read_timer());
                 let res = self.storage_driver.setup(arg1);
                 match res {
                     Ok(app_len) => {
@@ -452,6 +513,7 @@ impl<
 
             2 => {
                 // Request kernel to write app to flash.
+                self.timestamp.set(self.read_timer());
                 let res = self.write(arg1, arg2, processid);
                 match res {
                     Ok(()) => CommandReturn::success(),
@@ -471,6 +533,7 @@ impl<
 
             3 => {
                 // Signal to kernel writing is done.
+                // self.timestamp.set(self.read_timer());
                 let result = self.storage_driver.finalize();
                 match result {
                     Ok(()) => CommandReturn::success(),
@@ -484,6 +547,7 @@ impl<
 
             4 => {
                 // Request kernel to load the new app.
+                self.timestamp.set(self.read_timer());
                 let res = self.load_driver.load();
                 match res {
                     Ok(()) => {
@@ -500,6 +564,7 @@ impl<
 
             5 => {
                 // Request kernel to abort setup/write operation.
+                self.timestamp.set(self.read_timer());
                 let result = self.storage_driver.abort();
                 match result {
                     Ok(()) => {

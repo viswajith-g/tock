@@ -19,6 +19,7 @@ use crate::capabilities::ProcessManagementCapability;
 use crate::config;
 use crate::debug;
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
+use crate::hil::time::{Counter, Ticks};
 use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::process::{Process, ShortId};
@@ -493,8 +494,12 @@ pub enum PaddingRequirement {
 /// structures stored in the `procs` array. This machine scans the footers in
 /// the TBF for cryptographic credentials for binary integrity, passing them to
 /// the checker to decide whether the process has sufficient credentials to run.
-pub struct SequentialProcessLoaderMachine<'a, C: Chip + 'static, D: ProcessStandardDebug + 'static>
-{
+pub struct SequentialProcessLoaderMachine<
+    'a,
+    C: Chip + 'static,
+    D: ProcessStandardDebug + 'static,
+    T: Counter<'static> + 'static,
+> {
     /// Client to notify as processes are loaded and process loading finishes after boot.
     boot_client: OptionalCell<&'a dyn ProcessLoadingAsyncClient>,
     /// Client to notify as processes are loaded and process loading finishes during runtime.
@@ -525,9 +530,14 @@ pub struct SequentialProcessLoaderMachine<'a, C: Chip + 'static, D: ProcessStand
     state: OptionalCell<SequentialProcessLoaderMachineState>,
     /// Current operating mode of the loading machine.
     run_mode: OptionalCell<SequentialProcessLoaderMachineRunMode>,
+    timestamp: Cell<u32>,
+    cred_timestamp: Cell<u32>,
+    timer: &'static T,
 }
 
-impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C, D> {
+impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
+    SequentialProcessLoaderMachine<'a, C, D, T>
+{
     /// This function is made `pub` so that board files can use it, but loading
     /// processes from slices of flash an memory is fundamentally unsafe.
     /// Therefore, we require the `ProcessManagementCapability` to call this
@@ -543,6 +553,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         storage_policy: &'static dyn ProcessStandardStoragePermissionsPolicy<C, D>,
         policy: &'static dyn AppIdPolicy,
         _capability_management: &dyn ProcessManagementCapability,
+        timer: &'static T,
     ) -> Self {
         Self {
             deferred_call: DeferredCall::new(),
@@ -560,7 +571,37 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             fault_policy,
             storage_policy,
             state: OptionalCell::empty(),
+            timestamp: Cell::new(0),
+            cred_timestamp: Cell::new(0),
+            timer,
         }
+    }
+
+    fn elapsed_time(&self) -> u32 {
+        let t2 = self.read_timer();
+        let t1 = self.timestamp.get();
+
+        debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+        self.timestamp.set(0);
+        let freq = 32768;
+        let elapsed_ticks = t2.wrapping_sub(t1);
+        elapsed_ticks * (1000000 / freq)
+    }
+
+    fn cred_elapsed_time(&self) -> u32 {
+        let t2 = self.read_timer();
+        let t1 = self.cred_timestamp.get();
+
+        debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+        self.cred_timestamp.set(0);
+        let freq = 32768;
+        let elapsed_ticks = t2.wrapping_sub(t1);
+        elapsed_ticks * (1000000 / freq)
+    }
+
+    fn read_timer(&self) -> u32 {
+        let t1 = self.timer.now();
+        t1.into_u32()
     }
 
     /// Set the runtime client to receive callbacks about process loading and when
@@ -592,14 +633,20 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     fn load_and_check(&self) {
         let ret = self.discover_process_binary();
         match ret {
-            Ok(pb) => match self.checker.check(pb) {
-                Ok(()) => {}
-                Err(e) => {
-                    self.get_current_client().map(|client| {
-                        client.process_loaded(Err(ProcessLoadError::CheckError(e)));
-                    });
+            Ok(pb) => {
+                self.cred_timestamp.set(self.read_timer());
+                match self.checker.check(pb) {
+                    Ok(()) => {
+                        let elapsed = self.cred_elapsed_time();
+                        debug!("Time elapsed to check app credential: {}us", elapsed);
+                    }
+                    Err(e) => {
+                        self.get_current_client().map(|client| {
+                            client.process_loaded(Err(ProcessLoadError::CheckError(e)));
+                        });
+                    }
                 }
-            },
+            }
             Err(ProcessBinaryError::NotEnoughFlash)
             | Err(ProcessBinaryError::TbfHeaderNotFound) => {
                 // These two errors occur when there are no more app binaries in
@@ -1143,6 +1190,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         const MAX_PROCS: usize = 10;
         let mut pb_start_address: [usize; MAX_PROCS] = [0; MAX_PROCS];
         let mut pb_end_address: [usize; MAX_PROCS] = [0; MAX_PROCS];
+        self.timestamp.set(self.read_timer());
         match self.check_flash_for_valid_address(
             new_app_size,
             &mut pb_start_address,
@@ -1158,6 +1206,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                     );
                 let (padding_requirement, previous_app_end_addr, next_app_start_addr) =
                     (pr, prev_app_addr, next_app_addr);
+                let elapsed = self.elapsed_time();
+                debug!("Time to compute new available address: {}us", elapsed);
                 Ok((
                     app_address,
                     padding_requirement,
@@ -1231,8 +1281,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     }
 }
 
-impl<'a, C: Chip, D: ProcessStandardDebug> ProcessLoadingAsync<'a>
-    for SequentialProcessLoaderMachine<'a, C, D>
+impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>> ProcessLoadingAsync<'a>
+    for SequentialProcessLoaderMachine<'a, C, D, T>
 {
     fn set_client(&self, client: &'a dyn ProcessLoadingAsyncClient) {
         self.boot_client.set(client);
@@ -1252,8 +1302,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug> ProcessLoadingAsync<'a>
     }
 }
 
-impl<C: Chip, D: ProcessStandardDebug> DeferredCallClient
-    for SequentialProcessLoaderMachine<'_, C, D>
+impl<C: Chip, D: ProcessStandardDebug, T: Counter<'static>> DeferredCallClient
+    for SequentialProcessLoaderMachine<'_, C, D, T>
 {
     fn handle_deferred_call(&self) {
         // We use deferred calls to start the operation in the async loop.
@@ -1283,8 +1333,9 @@ impl<C: Chip, D: ProcessStandardDebug> DeferredCallClient
     }
 }
 
-impl<C: Chip, D: ProcessStandardDebug> crate::process_checker::ProcessCheckerMachineClient
-    for SequentialProcessLoaderMachine<'_, C, D>
+impl<C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
+    crate::process_checker::ProcessCheckerMachineClient
+    for SequentialProcessLoaderMachine<'_, C, D, T>
 {
     fn done(
         &self,
@@ -1306,12 +1357,14 @@ impl<C: Chip, D: ProcessStandardDebug> crate::process_checker::ProcessCheckerMac
                         self.proc_binaries.map(|proc_binaries| {
                             process_binary.credential.insert(optional_credential);
                             proc_binaries[index] = Some(process_binary);
+                            // let elapsed =  self.elapsed_time();
                         });
                     }
                     None => {
                         self.get_current_client().map(|client| {
                             client.process_loaded(Err(ProcessLoadError::NoProcessSlot));
                         });
+                        // let elapsed =  self.elapsed_time();
                     }
                 }
             }
@@ -1327,6 +1380,7 @@ impl<C: Chip, D: ProcessStandardDebug> crate::process_checker::ProcessCheckerMac
                 self.get_current_client().map(|client| {
                     client.process_loaded(Err(ProcessLoadError::CheckError(e)));
                 });
+                // let elapsed =  self.elapsed_time();
             }
         }
 

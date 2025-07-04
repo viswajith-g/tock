@@ -37,12 +37,13 @@ use kernel::capabilities;
 use kernel::component::Component;
 use kernel::create_capability;
 use kernel::dynamic_binary_storage;
+use kernel::hil::time::Counter;
 
 // Setup static space for the objects.
 #[macro_export]
 macro_rules! app_loader_component_static {
-    ($S:ty, $L:ty $(,)?) => {{
-        let al = kernel::static_buf!(capsules_extra::app_loader::AppLoader<$S, $L>);
+    ($S:ty, $L:ty, $T:ty $(,)?) => {{
+        let al = kernel::static_buf!(capsules_extra::app_loader::AppLoader<$S, $L, $T>);
         let buffer = kernel::static_buf!([u8; capsules_extra::app_loader::BUF_LEN]);
 
         (al, buffer)
@@ -52,29 +53,34 @@ macro_rules! app_loader_component_static {
 pub struct AppLoaderComponent<
     S: dynamic_binary_storage::DynamicBinaryStore + 'static,
     L: dynamic_binary_storage::DynamicProcessLoad + 'static,
+    T: Counter<'static> + 'static,
 > {
     board_kernel: &'static kernel::Kernel,
     driver_num: usize,
     storage_driver: &'static S,
     load_driver: &'static L,
+    timer: &'static T,
 }
 
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-    > AppLoaderComponent<S, L>
+        T: Counter<'static> + 'static,
+    > AppLoaderComponent<S, L, T>
 {
     pub fn new(
         board_kernel: &'static kernel::Kernel,
         driver_num: usize,
         storage_driver: &'static S,
         load_driver: &'static L,
+        timer: &'static T,
     ) -> Self {
         Self {
             board_kernel,
             driver_num,
             storage_driver,
             load_driver,
+            timer,
         }
     }
 }
@@ -82,13 +88,14 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-    > Component for AppLoaderComponent<S, L>
+        T: Counter<'static> + 'static,
+    > Component for AppLoaderComponent<S, L, T>
 {
     type StaticInput = (
-        &'static mut MaybeUninit<AppLoader<S, L>>,
+        &'static mut MaybeUninit<AppLoader<S, L, T>>,
         &'static mut MaybeUninit<[u8; capsules_extra::app_loader::BUF_LEN]>,
     );
-    type Output = &'static AppLoader<S, L>;
+    type Output = &'static AppLoader<S, L, T>;
 
     fn finalize(self, static_buffer: Self::StaticInput) -> Self::Output {
         let grant_cap = create_capability!(capabilities::MemoryAllocationCapability);
@@ -102,6 +109,7 @@ impl<
             self.storage_driver,
             self.load_driver,
             buffer,
+            self.timer,
         ));
         dynamic_binary_storage::DynamicBinaryStore::set_storage_client(
             self.storage_driver,

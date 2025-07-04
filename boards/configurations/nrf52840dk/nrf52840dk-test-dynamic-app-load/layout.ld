@@ -3,5 +3,5 @@
 /* Copyright Tock Contributors 2023.                                  */
 
 INCLUDE ../../../nordic/nrf52840_chip_layout.ld
-INCLUDE tock_kernel_layout.ld
+INCLUDE ../../../build_scripts/tock_kernel_layout.ld
 

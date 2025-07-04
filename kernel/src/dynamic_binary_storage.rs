@@ -13,6 +13,7 @@ use crate::config;
 use crate::debug;
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
 use crate::hil::nonvolatile_storage::{NonvolatileStorage, NonvolatileStorageClient};
+use crate::hil::time::Counter;
 use crate::platform::chip::Chip;
 use crate::process::ProcessLoadingAsyncClient;
 use crate::process_loading::{
@@ -135,9 +136,10 @@ pub struct SequentialDynamicBinaryStorage<
     C: Chip + 'static,
     D: ProcessStandardDebug + 'static,
     F: NonvolatileStorage<'b>,
+    T: Counter<'static> + 'static,
 > {
     flash_driver: &'b F,
-    loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D>,
+    loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D, T>,
     buffer: TakeCell<'static, [u8]>,
     storage_client: OptionalCell<&'static dyn DynamicBinaryStoreClient>,
     load_client: OptionalCell<&'static dyn DynamicProcessLoadClient>,
@@ -146,12 +148,18 @@ pub struct SequentialDynamicBinaryStorage<
     deferred_call: DeferredCall,
 }
 
-impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileStorage<'b>>
-    SequentialDynamicBinaryStorage<'a, 'b, C, D, F>
+impl<
+        'a,
+        'b,
+        C: Chip + 'static,
+        D: ProcessStandardDebug + 'static,
+        F: NonvolatileStorage<'b>,
+        T: Counter<'static> + 'static,
+    > SequentialDynamicBinaryStorage<'a, 'b, C, D, F, T>
 {
     pub fn new(
         flash_driver: &'b F,
-        loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D>,
+        loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D, T>,
         buffer: &'static mut [u8],
     ) -> Self {
         Self {
@@ -336,8 +344,13 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
     }
 }
 
-impl<'b, C: Chip, D: ProcessStandardDebug, F: NonvolatileStorage<'b>> DeferredCallClient
-    for SequentialDynamicBinaryStorage<'_, 'b, C, D, F>
+impl<
+        'b,
+        C: Chip,
+        D: ProcessStandardDebug,
+        F: NonvolatileStorage<'b>,
+        T: Counter<'static> + 'static,
+    > DeferredCallClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
 {
     fn handle_deferred_call(&self) {
         // We use deferred call to signal the completion of finalize
@@ -352,8 +365,13 @@ impl<'b, C: Chip, D: ProcessStandardDebug, F: NonvolatileStorage<'b>> DeferredCa
 }
 
 /// This is the callback client for the underlying physical storage driver.
-impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileStorage<'b>>
-    NonvolatileStorageClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F>
+impl<
+        'b,
+        C: Chip + 'static,
+        D: ProcessStandardDebug + 'static,
+        F: NonvolatileStorage<'b>,
+        T: Counter<'static> + 'static,
+    > NonvolatileStorageClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
 {
     fn read_done(&self, _buffer: &'static mut [u8], _length: usize) {
         // We will never use this, but we need to implement this anyway.
@@ -434,8 +452,13 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
 }
 
 /// Callback client for the async process loader
-impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileStorage<'b>>
-    ProcessLoadingAsyncClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F>
+impl<
+        'b,
+        C: Chip + 'static,
+        D: ProcessStandardDebug + 'static,
+        F: NonvolatileStorage<'b>,
+        T: Counter<'static> + 'static,
+    > ProcessLoadingAsyncClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
 {
     fn process_loaded(&self, result: Result<(), ProcessLoadError>) {
         self.load_client.map(|client| {
@@ -451,8 +474,13 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
 }
 
 /// Storage interface exposed to the app_loader capsule
-impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileStorage<'b>>
-    DynamicBinaryStore for SequentialDynamicBinaryStorage<'_, 'b, C, D, F>
+impl<
+        'b,
+        C: Chip + 'static,
+        D: ProcessStandardDebug + 'static,
+        F: NonvolatileStorage<'b>,
+        T: Counter<'static> + 'static,
+    > DynamicBinaryStore for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
 {
     fn set_storage_client(&self, client: &'static dyn DynamicBinaryStoreClient) {
         self.storage_client.set(client);
@@ -638,8 +666,13 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
 }
 
 /// Loading interface exposed to the app_loader capsule
-impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileStorage<'b>>
-    DynamicProcessLoad for SequentialDynamicBinaryStorage<'_, 'b, C, D, F>
+impl<
+        'b,
+        C: Chip + 'static,
+        D: ProcessStandardDebug + 'static,
+        F: NonvolatileStorage<'b>,
+        T: Counter<'static> + 'static,
+    > DynamicProcessLoad for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
 {
     fn set_load_client(&self, client: &'static dyn DynamicProcessLoadClient) {
         self.load_client.set(client);

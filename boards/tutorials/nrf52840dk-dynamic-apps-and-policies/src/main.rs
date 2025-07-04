@@ -14,6 +14,7 @@ use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::process::ProcessLoadingAsync;
 use kernel::process::ShortId;
 use kernel::{capabilities, create_capability, static_init};
+// use kernel::hil::time::Counter;
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
 
@@ -79,10 +80,12 @@ type DynamicBinaryStorage<'a> = kernel::dynamic_binary_storage::SequentialDynami
     nrf52840::chip::NRF52<'a, Nrf52840DefaultPeripherals<'a>>,
     kernel::process::ProcessStandardDebugFull,
     NonVolatilePages,
+    nrf52840::rtc::Rtc<'static>,
 >;
 type AppLoaderDriver = capsules_extra::app_loader::AppLoader<
     DynamicBinaryStorage<'static>,
     DynamicBinaryStorage<'static>,
+    nrf52840::rtc::Rtc<'static>,
 >;
 
 type Verifier = ecdsa_sw::p256_verifier::EcdsaP256SignatureVerifier<'static>;
@@ -208,12 +211,12 @@ impl kernel::process::ProcessLoadingAsyncClient for Platform {
 #[no_mangle]
 pub unsafe fn main() {
     let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
-
     // Create the base board:
     let (board_kernel, base_platform, chip, nrf52840_peripherals, _mux_alarm) =
         nrf52840dk_lib::start();
 
     CHIP = Some(chip);
+    let rtc = &nrf52840_peripherals.nrf52.rtc;
 
     //--------------------------------------------------------------------------
     // SCREEN
@@ -495,11 +498,13 @@ pub unsafe fn main() {
         storage_permissions_policy,
         app_flash,
         app_memory,
+        rtc,
     )
     .finalize(components::process_loader_sequential_component_static!(
         nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
         kernel::process::ProcessStandardDebugFull,
-        NUM_PROCS
+        NUM_PROCS,
+        nrf52840::rtc::Rtc<'static>,
     ));
 
     //--------------------------------------------------------------------------
@@ -516,6 +521,7 @@ pub unsafe fn main() {
             FlashUser,
             nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
             kernel::process::ProcessStandardDebugFull,
+            nrf52840::rtc::Rtc<'static>,
         ));
 
     // Create the dynamic app loader capsule.
@@ -524,10 +530,12 @@ pub unsafe fn main() {
         capsules_extra::app_loader::DRIVER_NUM,
         dynamic_binary_storage,
         dynamic_binary_storage,
+        rtc,
     )
     .finalize(components::app_loader_component_static!(
         DynamicBinaryStorage<'static>,
         DynamicBinaryStorage<'static>,
+        nrf52840::rtc::Rtc<'static>,
     ));
 
     //--------------------------------------------------------------------------

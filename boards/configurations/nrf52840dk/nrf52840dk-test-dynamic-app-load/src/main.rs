@@ -74,6 +74,7 @@ type DynamicBinaryStorage<'a> = kernel::dynamic_binary_storage::SequentialDynami
     nrf52840::chip::NRF52<'a, Nrf52840DefaultPeripherals<'a>>,
     kernel::process::ProcessStandardDebugFull,
     NonVolatilePages,
+    nrf52840::rtc::Rtc<'static>,
 >;
 
 /// Supported drivers by the platform
@@ -93,6 +94,7 @@ pub struct Platform {
     dynamic_app_loader: &'static capsules_extra::app_loader::AppLoader<
         DynamicBinaryStorage<'static>,
         DynamicBinaryStorage<'static>,
+        nrf52840::rtc::Rtc<'static>,
     >,
 }
 
@@ -439,11 +441,13 @@ pub unsafe fn main() {
         storage_permissions_policy,
         app_flash,
         app_memory,
+        rtc,
     )
     .finalize(components::process_loader_sequential_component_static!(
         nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
         kernel::process::ProcessStandardDebugFull,
-        NUM_PROCS
+        NUM_PROCS,
+        nrf52840::rtc::Rtc<'static>,
     ));
 
     //--------------------------------------------------------------------------
@@ -460,6 +464,7 @@ pub unsafe fn main() {
             nrf52840::nvmc::Nvmc,
             nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
             kernel::process::ProcessStandardDebugFull,
+            nrf52840::rtc::Rtc<'static>,
         ));
 
     // Create the dynamic app loader capsule.
@@ -468,10 +473,12 @@ pub unsafe fn main() {
         capsules_extra::app_loader::DRIVER_NUM,
         dynamic_binary_storage,
         dynamic_binary_storage,
+        rtc,
     )
     .finalize(components::app_loader_component_static!(
         DynamicBinaryStorage<'static>,
         DynamicBinaryStorage<'static>,
+        nrf52840::rtc::Rtc<'static>,
     ));
 
     //--------------------------------------------------------------------------
