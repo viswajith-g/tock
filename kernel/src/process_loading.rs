@@ -19,7 +19,7 @@ use crate::capabilities::ProcessManagementCapability;
 use crate::config;
 use crate::debug;
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
-use crate::hil::time::{Counter, Ticks};
+use crate::hil::time::{Frequency, Ticks, Time};
 use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::process::{Process, ShortId};
@@ -498,7 +498,8 @@ pub struct SequentialProcessLoaderMachine<
     'a,
     C: Chip + 'static,
     D: ProcessStandardDebug + 'static,
-    T: Counter<'static> + 'static,
+    F: 'static + Frequency,
+    T: 'static + Ticks,
 > {
     /// Client to notify as processes are loaded and process loading finishes after boot.
     boot_client: OptionalCell<&'a dyn ProcessLoadingAsyncClient>,
@@ -532,11 +533,11 @@ pub struct SequentialProcessLoaderMachine<
     run_mode: OptionalCell<SequentialProcessLoaderMachineRunMode>,
     timestamp: Cell<u32>,
     cred_timestamp: Cell<u32>,
-    timer: &'static T,
+    timer: &'static dyn Time<Frequency = F, Ticks = T>,
 }
 
-impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
-    SequentialProcessLoaderMachine<'a, C, D, T>
+impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + Ticks>
+    SequentialProcessLoaderMachine<'a, C, D, F, T>
 {
     /// This function is made `pub` so that board files can use it, but loading
     /// processes from slices of flash an memory is fundamentally unsafe.
@@ -553,7 +554,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
         storage_policy: &'static dyn ProcessStandardStoragePermissionsPolicy<C, D>,
         policy: &'static dyn AppIdPolicy,
         _capability_management: &dyn ProcessManagementCapability,
-        timer: &'static T,
+        timer: &'static dyn Time<Frequency = F, Ticks = T>,
     ) -> Self {
         Self {
             deferred_call: DeferredCall::new(),
@@ -581,27 +582,32 @@ impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
         let t2 = self.read_timer();
         let t1 = self.timestamp.get();
 
-        debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+        // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
         self.timestamp.set(0);
-        let freq = 32768;
+        // let freq = 32768;
         let elapsed_ticks = t2.wrapping_sub(t1);
-        elapsed_ticks * (1000000 / freq)
+
+        let freq = F::frequency();
+        // debug!("Frequency value: {:?}", freq);
+        elapsed_ticks * (1_000_000 / freq)
     }
 
     fn cred_elapsed_time(&self) -> u32 {
         let t2 = self.read_timer();
         let t1 = self.cred_timestamp.get();
 
-        debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+        // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
         self.cred_timestamp.set(0);
-        let freq = 32768;
+        // let freq = 32768;
         let elapsed_ticks = t2.wrapping_sub(t1);
-        elapsed_ticks * (1000000 / freq)
+
+        let freq = F::frequency();
+        // debug!("Frequency value: {:?}", freq);
+        elapsed_ticks * (1_000_000 / freq)
     }
 
     fn read_timer(&self) -> u32 {
-        let t1 = self.timer.now();
-        t1.into_u32()
+        self.timer.now().into_u32()
     }
 
     /// Set the runtime client to receive callbacks about process loading and when
@@ -634,11 +640,21 @@ impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
         let ret = self.discover_process_binary();
         match ret {
             Ok(pb) => {
+                // debug!("Checker timer started");
                 self.cred_timestamp.set(self.read_timer());
                 match self.checker.check(pb) {
                     Ok(()) => {
-                        let elapsed = self.cred_elapsed_time();
-                        debug!("Time elapsed to check app credential: {}us", elapsed);
+                        let mut elapsed: f32 = self.cred_elapsed_time() as f32;
+                        let mut units = "us";
+                        if elapsed > 1000000.0 {
+                            elapsed = elapsed / 1000000.0;
+                            units = "s"
+                        }
+                        if elapsed > 1000.0 {
+                            elapsed = elapsed / 1000.0;
+                            units = "ms"
+                        }
+                        debug!("Time elapsed to check app credential: {}{}", elapsed, units);
                     }
                     Err(e) => {
                         self.get_current_client().map(|client| {
@@ -1190,6 +1206,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
         const MAX_PROCS: usize = 10;
         let mut pb_start_address: [usize; MAX_PROCS] = [0; MAX_PROCS];
         let mut pb_end_address: [usize; MAX_PROCS] = [0; MAX_PROCS];
+        debug!("new_address_check timer started");
         self.timestamp.set(self.read_timer());
         match self.check_flash_for_valid_address(
             new_app_size,
@@ -1206,8 +1223,20 @@ impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
                     );
                 let (padding_requirement, previous_app_end_addr, next_app_start_addr) =
                     (pr, prev_app_addr, next_app_addr);
-                let elapsed = self.elapsed_time();
-                debug!("Time to compute new available address: {}us", elapsed);
+                let mut elapsed: f32 = self.elapsed_time() as f32;
+                let mut units = "us";
+                if elapsed > 1000000.0 {
+                    elapsed = elapsed / 1000000.0;
+                    units = "s"
+                }
+                if elapsed > 1000.0 {
+                    elapsed = elapsed / 1000.0;
+                    units = "ms"
+                }
+                debug!(
+                    "Time to compute new available address: {}{}",
+                    elapsed, units
+                );
                 Ok((
                     app_address,
                     padding_requirement,
@@ -1281,8 +1310,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
     }
 }
 
-impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>> ProcessLoadingAsync<'a>
-    for SequentialProcessLoaderMachine<'a, C, D, T>
+impl<'a, C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks> ProcessLoadingAsync<'a>
+    for SequentialProcessLoaderMachine<'a, C, D, F, T>
 {
     fn set_client(&self, client: &'a dyn ProcessLoadingAsyncClient) {
         self.boot_client.set(client);
@@ -1302,8 +1331,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug, T: Counter<'static>> ProcessLoadingAs
     }
 }
 
-impl<C: Chip, D: ProcessStandardDebug, T: Counter<'static>> DeferredCallClient
-    for SequentialProcessLoaderMachine<'_, C, D, T>
+impl<C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks> DeferredCallClient
+    for SequentialProcessLoaderMachine<'_, C, D, F, T>
 {
     fn handle_deferred_call(&self) {
         // We use deferred calls to start the operation in the async loop.
@@ -1333,9 +1362,9 @@ impl<C: Chip, D: ProcessStandardDebug, T: Counter<'static>> DeferredCallClient
     }
 }
 
-impl<C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
+impl<C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks>
     crate::process_checker::ProcessCheckerMachineClient
-    for SequentialProcessLoaderMachine<'_, C, D, T>
+    for SequentialProcessLoaderMachine<'_, C, D, F, T>
 {
     fn done(
         &self,
@@ -1357,14 +1386,12 @@ impl<C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
                         self.proc_binaries.map(|proc_binaries| {
                             process_binary.credential.insert(optional_credential);
                             proc_binaries[index] = Some(process_binary);
-                            // let elapsed =  self.elapsed_time();
                         });
                     }
                     None => {
                         self.get_current_client().map(|client| {
                             client.process_loaded(Err(ProcessLoadError::NoProcessSlot));
                         });
-                        // let elapsed =  self.elapsed_time();
                     }
                 }
             }
@@ -1380,7 +1407,6 @@ impl<C: Chip, D: ProcessStandardDebug, T: Counter<'static>>
                 self.get_current_client().map(|client| {
                     client.process_loaded(Err(ProcessLoadError::CheckError(e)));
                 });
-                // let elapsed =  self.elapsed_time();
             }
         }
 

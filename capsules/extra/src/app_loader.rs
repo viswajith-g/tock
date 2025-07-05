@@ -79,7 +79,7 @@ use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::{ErrorCode, ProcessId};
 // use kernel::hil::time::{self, Time, ConvertTicks};
-use kernel::hil::time::{Counter, Ticks};
+use kernel::hil::time::{Frequency, Ticks, Time};
 // use nrf52::timer;
 
 /// Syscall driver number.
@@ -120,7 +120,8 @@ pub struct App {
 pub struct AppLoader<
     S: dynamic_binary_storage::DynamicBinaryStore + 'static,
     L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-    T: Counter<'static> + 'static,
+    F: 'static + Frequency,
+    T: 'static + Ticks,
 > {
     // The underlying driver for the process flashing and loading.
     storage_driver: &'static S,
@@ -140,14 +141,16 @@ pub struct AppLoader<
     new_app_length: Cell<usize>,
     /// Time provider.
     timestamp: Cell<u32>,
-    timer: &'static T,
+    write_timestamp: OptionalCell<u32>,
+    timer: &'static dyn Time<Frequency = F, Ticks = T>,
 }
 
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-        T: Counter<'static> + 'static,
-    > AppLoader<S, L, T>
+        F: 'static + Frequency,
+        T: 'static + Ticks,
+    > AppLoader<S, L, F, T>
 {
     pub fn new(
         grant: Grant<
@@ -159,8 +162,8 @@ impl<
         storage_driver: &'static S,
         load_driver: &'static L,
         buffer: &'static mut [u8],
-        timer: &'static T,
-    ) -> AppLoader<S, L, T> {
+        timer: &'static dyn Time<Frequency = F, Ticks = T>,
+    ) -> AppLoader<S, L, F, T> {
         AppLoader {
             apps: grant,
             storage_driver,
@@ -169,6 +172,7 @@ impl<
             current_process: OptionalCell::empty(),
             new_app_length: Cell::new(0),
             timestamp: Cell::new(0),
+            write_timestamp: OptionalCell::empty(),
             timer,
         }
     }
@@ -177,16 +181,35 @@ impl<
         let t2 = self.read_timer();
         let t1 = self.timestamp.get();
 
-        debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+        // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
         self.timestamp.set(0);
-        let freq = 32768;
+        // let freq = 32768;
         let elapsed_ticks = t2.wrapping_sub(t1);
-        elapsed_ticks * (1000000 / freq)
+
+        let freq = F::frequency();
+
+        // debug!("Frequency value: {:?}", freq);
+        elapsed_ticks * (1_000_000 / freq)
+    }
+
+    fn write_elapsed_time(&self) -> u32 {
+        let t2 = self.read_timer();
+        if let Some(t1) = self.write_timestamp.take() {
+            // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+
+            let elapsed_ticks = t2.wrapping_sub(t1);
+            let freq = F::frequency();
+
+            // debug!("Frequency value: {:?}", freq);
+            elapsed_ticks * (1_000_000 / freq)
+        } else {
+            debug!("No timestamp stored!");
+            0
+        }
     }
 
     fn read_timer(&self) -> u32 {
-        let t1 = self.timer.now();
-        t1.into_u32()
+        self.timer.now().into_u32()
     }
 
     /// Copy data from the shared buffer with app and request kernel to
@@ -264,8 +287,9 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-        T: Counter<'static> + 'static,
-    > dynamic_binary_storage::DynamicBinaryStoreClient for AppLoader<S, L, T>
+        F: 'static + Frequency,
+        T: 'static + Ticks,
+    > dynamic_binary_storage::DynamicBinaryStoreClient for AppLoader<S, L, F, T>
 {
     /// Let the requesting app know we are done setting up for the new app
     fn setup_done(&self, result: Result<(), ErrorCode>) {
@@ -274,8 +298,20 @@ impl<
             let _ = self.apps.enter(processid, move |app, kernel_data| {
                 app.pending_command = false;
 
-                let elapsed = self.elapsed_time();
-                debug!("Elapsed time between setup and setup_done: {}us", elapsed);
+                let mut elapsed: f32 = self.elapsed_time() as f32;
+                let mut units = "us";
+                if elapsed > 1000000.0 {
+                    elapsed = elapsed / 1000000.0;
+                    units = "s"
+                }
+                if elapsed > 1000.0 {
+                    elapsed = elapsed / 1000.0;
+                    units = "ms"
+                }
+                debug!(
+                    "Elapsed time between setup and setup_done: {}{}",
+                    elapsed, units
+                );
 
                 // Signal the app.
                 kernel_data
@@ -300,7 +336,7 @@ impl<
 
                 // debug!("Elapsed ticks between write and write_done: {}", elapsed);
 
-                // let elapsed = self.elapsed_time();
+                // let elapsed = self.elapsed_time()  as f32;
                 // debug!("Elapsed time between write and write_done: {}us", elapsed);
 
                 // And then signal the app.
@@ -320,10 +356,19 @@ impl<
 
                 self.current_process.take();
 
-                let elapsed = self.elapsed_time();
+                let mut elapsed: f32 = self.write_elapsed_time() as f32 as f32;
+                let mut units = "us";
+                if elapsed > 1000000.0 {
+                    elapsed = elapsed / 1000000.0;
+                    units = "s"
+                }
+                if elapsed > 1000.0 {
+                    elapsed = elapsed / 1000.0;
+                    units = "ms"
+                }
                 debug!(
-                    "Elapsed time between write and finalize_done: {}us",
-                    elapsed
+                    "Elapsed time between write and finalize_done: {}{}",
+                    elapsed, units
                 );
 
                 kernel_data
@@ -342,8 +387,20 @@ impl<
 
                 self.current_process.take();
 
-                let elapsed = self.elapsed_time();
-                debug!("Elapsed time between abort and abort_done: {}us", elapsed);
+                let mut elapsed: f32 = self.elapsed_time() as f32;
+                let mut units = "us";
+                if elapsed > 1000000.0 {
+                    elapsed = elapsed / 1000000.0;
+                    units = "s"
+                }
+                if elapsed > 1000.0 {
+                    elapsed = elapsed / 1000.0;
+                    units = "ms"
+                }
+                debug!(
+                    "Elapsed time between abort and abort_done: {}{}",
+                    elapsed, units
+                );
 
                 kernel_data
                     .schedule_upcall(upcall::ABORT_DONE, (into_statuscode(result), 0, 0))
@@ -356,8 +413,9 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-        T: Counter<'static> + 'static,
-    > dynamic_binary_storage::DynamicProcessLoadClient for AppLoader<S, L, T>
+        F: 'static + Frequency,
+        T: 'static + Ticks,
+    > dynamic_binary_storage::DynamicProcessLoadClient for AppLoader<S, L, F, T>
 {
     /// Let the requesting app know we are done loading the new process
     ///
@@ -395,8 +453,20 @@ impl<
                 // Signal the app.
                 self.current_process.take();
 
-                let elapsed = self.elapsed_time();
-                debug!("Elapsed time between load and load_done: {}us", elapsed);
+                let mut elapsed: f32 = self.elapsed_time() as f32;
+                let mut units = "us";
+                if elapsed > 1000.0 {
+                    elapsed = elapsed / 1000.0;
+                    units = "ms"
+                }
+                if elapsed > 1000000.0 {
+                    elapsed = elapsed / 1000000.0;
+                    units = "s"
+                }
+                debug!(
+                    "Elapsed time between load and load_done: {}{}",
+                    elapsed, units
+                );
 
                 kernel_data
                     .schedule_upcall(upcall::LOAD_DONE, (into_statuscode(status_code), 0, 0))
@@ -410,8 +480,9 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-        T: Counter<'static> + 'static,
-    > SyscallDriver for AppLoader<S, L, T>
+        F: 'static + Frequency,
+        T: 'static + Ticks,
+    > SyscallDriver for AppLoader<S, L, F, T>
 {
     /// Command interface.
     ///
@@ -495,7 +566,7 @@ impl<
             1 => {
                 // Request kernel to allocate resources for
                 // an app with size passed via `arg1`.
-                // self.time.set(self.read_timer());
+
                 self.timestamp.set(self.read_timer());
                 let res = self.storage_driver.setup(arg1);
                 match res {
@@ -513,7 +584,10 @@ impl<
 
             2 => {
                 // Request kernel to write app to flash.
-                self.timestamp.set(self.read_timer());
+
+                if self.write_timestamp.is_none() {
+                    self.write_timestamp.set(self.read_timer());
+                }
                 let res = self.write(arg1, arg2, processid);
                 match res {
                     Ok(()) => CommandReturn::success(),
@@ -533,7 +607,6 @@ impl<
 
             3 => {
                 // Signal to kernel writing is done.
-                // self.timestamp.set(self.read_timer());
                 let result = self.storage_driver.finalize();
                 match result {
                     Ok(()) => CommandReturn::success(),

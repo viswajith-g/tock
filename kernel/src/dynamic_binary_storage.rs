@@ -13,7 +13,8 @@ use crate::config;
 use crate::debug;
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
 use crate::hil::nonvolatile_storage::{NonvolatileStorage, NonvolatileStorageClient};
-use crate::hil::time::Counter;
+// use crate::hil::time::Counter;
+use crate::hil::time::{Frequency, Ticks};
 use crate::platform::chip::Chip;
 use crate::process::ProcessLoadingAsyncClient;
 use crate::process_loading::{
@@ -136,10 +137,11 @@ pub struct SequentialDynamicBinaryStorage<
     C: Chip + 'static,
     D: ProcessStandardDebug + 'static,
     F: NonvolatileStorage<'b>,
-    T: Counter<'static> + 'static,
+    R: 'static + Frequency,
+    T: 'static + Ticks,
 > {
     flash_driver: &'b F,
-    loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D, T>,
+    loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D, R, T>,
     buffer: TakeCell<'static, [u8]>,
     storage_client: OptionalCell<&'static dyn DynamicBinaryStoreClient>,
     load_client: OptionalCell<&'static dyn DynamicProcessLoadClient>,
@@ -154,12 +156,13 @@ impl<
         C: Chip + 'static,
         D: ProcessStandardDebug + 'static,
         F: NonvolatileStorage<'b>,
-        T: Counter<'static> + 'static,
-    > SequentialDynamicBinaryStorage<'a, 'b, C, D, F, T>
+        R: 'static + Frequency,
+        T: 'static + Ticks,
+    > SequentialDynamicBinaryStorage<'a, 'b, C, D, F, R, T>
 {
     pub fn new(
         flash_driver: &'b F,
-        loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D, T>,
+        loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D, R, T>,
         buffer: &'static mut [u8],
     ) -> Self {
         Self {
@@ -349,8 +352,9 @@ impl<
         C: Chip,
         D: ProcessStandardDebug,
         F: NonvolatileStorage<'b>,
-        T: Counter<'static> + 'static,
-    > DeferredCallClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
+        R: 'static + Frequency,
+        T: 'static + Ticks,
+    > DeferredCallClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, R, T>
 {
     fn handle_deferred_call(&self) {
         // We use deferred call to signal the completion of finalize
@@ -370,8 +374,9 @@ impl<
         C: Chip + 'static,
         D: ProcessStandardDebug + 'static,
         F: NonvolatileStorage<'b>,
-        T: Counter<'static> + 'static,
-    > NonvolatileStorageClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
+        R: 'static + Frequency,
+        T: 'static + Ticks,
+    > NonvolatileStorageClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, R, T>
 {
     fn read_done(&self, _buffer: &'static mut [u8], _length: usize) {
         // We will never use this, but we need to implement this anyway.
@@ -457,8 +462,9 @@ impl<
         C: Chip + 'static,
         D: ProcessStandardDebug + 'static,
         F: NonvolatileStorage<'b>,
-        T: Counter<'static> + 'static,
-    > ProcessLoadingAsyncClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
+        R: 'static + Frequency,
+        T: 'static + Ticks,
+    > ProcessLoadingAsyncClient for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, R, T>
 {
     fn process_loaded(&self, result: Result<(), ProcessLoadError>) {
         self.load_client.map(|client| {
@@ -479,8 +485,9 @@ impl<
         C: Chip + 'static,
         D: ProcessStandardDebug + 'static,
         F: NonvolatileStorage<'b>,
-        T: Counter<'static> + 'static,
-    > DynamicBinaryStore for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
+        R: 'static + Frequency,
+        T: 'static + Ticks,
+    > DynamicBinaryStore for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, R, T>
 {
     fn set_storage_client(&self, client: &'static dyn DynamicBinaryStoreClient) {
         self.storage_client.set(client);
@@ -671,8 +678,9 @@ impl<
         C: Chip + 'static,
         D: ProcessStandardDebug + 'static,
         F: NonvolatileStorage<'b>,
-        T: Counter<'static> + 'static,
-    > DynamicProcessLoad for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, T>
+        R: 'static + Frequency,
+        T: 'static + Ticks,
+    > DynamicProcessLoad for SequentialDynamicBinaryStorage<'_, 'b, C, D, F, R, T>
 {
     fn set_load_client(&self, client: &'static dyn DynamicProcessLoadClient) {
         self.load_client.set(client);

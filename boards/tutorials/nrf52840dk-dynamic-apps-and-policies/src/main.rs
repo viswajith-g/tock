@@ -17,6 +17,7 @@ use kernel::{capabilities, create_capability, static_init};
 // use kernel::hil::time::Counter;
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
+use nrf52840::timer::TimerAlarm;
 
 mod app_id_assigner_name_metadata;
 mod checker_credentials_not_required;
@@ -80,12 +81,14 @@ type DynamicBinaryStorage<'a> = kernel::dynamic_binary_storage::SequentialDynami
     nrf52840::chip::NRF52<'a, Nrf52840DefaultPeripherals<'a>>,
     kernel::process::ProcessStandardDebugFull,
     NonVolatilePages,
-    nrf52840::rtc::Rtc<'static>,
+    kernel::hil::time::Freq1MHz,
+    kernel::hil::time::Ticks32,
 >;
 type AppLoaderDriver = capsules_extra::app_loader::AppLoader<
     DynamicBinaryStorage<'static>,
     DynamicBinaryStorage<'static>,
-    nrf52840::rtc::Rtc<'static>,
+    kernel::hil::time::Freq1MHz,
+    kernel::hil::time::Ticks32,
 >;
 
 type Verifier = ecdsa_sw::p256_verifier::EcdsaP256SignatureVerifier<'static>;
@@ -216,7 +219,7 @@ pub unsafe fn main() {
         nrf52840dk_lib::start();
 
     CHIP = Some(chip);
-    let rtc = &nrf52840_peripherals.nrf52.rtc;
+    // let rtc = &nrf52840_peripherals.nrf52.rtc;
 
     //--------------------------------------------------------------------------
     // SCREEN
@@ -464,6 +467,18 @@ pub unsafe fn main() {
         );
 
     //--------------------------------------------------------------------------
+    // Timer 1 instantiation
+    //--------------------------------------------------------------------------
+    let timer0 = static_init!(TimerAlarm<'static>, TimerAlarm::new(0));
+
+    // timer0.set_alarm(
+    //     Ticks32::from(0),
+    //     Ticks32::from(1),
+    // );
+
+    timer0.start();
+
+    //--------------------------------------------------------------------------
     // PROCESS LOADING
     //--------------------------------------------------------------------------
 
@@ -498,13 +513,15 @@ pub unsafe fn main() {
         storage_permissions_policy,
         app_flash,
         app_memory,
-        rtc,
+        timer0,
     )
     .finalize(components::process_loader_sequential_component_static!(
         nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
         kernel::process::ProcessStandardDebugFull,
         NUM_PROCS,
-        nrf52840::rtc::Rtc<'static>,
+        kernel::hil::time::Freq1MHz,
+        kernel::hil::time::Ticks32,
+        // nrf52840::rtc::Rtc<'static>,
     ));
 
     //--------------------------------------------------------------------------
@@ -521,7 +538,9 @@ pub unsafe fn main() {
             FlashUser,
             nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
             kernel::process::ProcessStandardDebugFull,
-            nrf52840::rtc::Rtc<'static>,
+            // nrf52840::rtc::Rtc<'static>,
+            kernel::hil::time::Freq1MHz,
+            kernel::hil::time::Ticks32,
         ));
 
     // Create the dynamic app loader capsule.
@@ -530,12 +549,14 @@ pub unsafe fn main() {
         capsules_extra::app_loader::DRIVER_NUM,
         dynamic_binary_storage,
         dynamic_binary_storage,
-        rtc,
+        timer0,
     )
     .finalize(components::app_loader_component_static!(
         DynamicBinaryStorage<'static>,
         DynamicBinaryStorage<'static>,
-        nrf52840::rtc::Rtc<'static>,
+        kernel::hil::time::Freq1MHz,
+        kernel::hil::time::Ticks32,
+        // nrf52840::rtc::Rtc<'static>,
     ));
 
     //--------------------------------------------------------------------------

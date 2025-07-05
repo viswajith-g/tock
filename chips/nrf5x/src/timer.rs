@@ -309,10 +309,29 @@ impl<'a> TimerAlarm<'a> {
         self.registers.tasks_capture[CC_CAPTURE].write(Task::ENABLE::SET);
         self.registers.cc[CC_CAPTURE].get()
     }
+
+    pub fn start(&self) {
+        // Timer mode
+        self.registers.mode.set(0);
+
+        // 32-bit counter
+        self.registers.bitmode.write(Bitmode::BITMODE::Bit32);
+
+        // Prescaler: 0 → full 16 MHz clock
+        // Prescaler 4 → 1 MHz clock
+        // Prescaler 14 → 1 kHz clock
+        self.registers.prescaler.set(4);
+
+        // Clear counter before starting
+        self.registers.tasks_clear.write(Task::ENABLE::SET);
+
+        // Start timer
+        self.registers.tasks_start.write(Task::ENABLE::SET);
+    }
 }
 
 impl Time for TimerAlarm<'_> {
-    type Frequency = hil::time::Freq16KHz;
+    type Frequency = hil::time::Freq1MHz;
     // Note: we always use BITMODE::32.
     type Ticks = hil::time::Ticks32;
 
