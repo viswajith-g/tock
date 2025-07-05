@@ -644,7 +644,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
                 self.cred_timestamp.set(self.read_timer());
                 match self.checker.check(pb) {
                     Ok(()) => {
-                        let mut elapsed: f32 = self.cred_elapsed_time() as f32;
+                        let mut elapsed = self.cred_elapsed_time() as f32;
                         let mut units = "us";
                         if elapsed > 1000000.0 {
                             elapsed = elapsed / 1000000.0;
@@ -1168,12 +1168,27 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
         let total_flash = self.flash_bank.get();
         let total_flash_start = total_flash.as_ptr() as usize;
         let total_flash_end = total_flash_start + total_flash.len() - 1;
-
+        self.timestamp.set(self.read_timer());
         match self.scan_flash_for_process_binaries(total_flash, pb_start_address, pb_end_address) {
             Ok(()) => {
                 if config::CONFIG.debug_load_processes {
                     debug!("Successfully scanned flash");
                 }
+                let mut elapsed = self.elapsed_time() as f32;
+                let mut units = "us";
+                if elapsed > 1000000.0 {
+                    elapsed = elapsed / 1000000.0;
+                    units = "s"
+                }
+                if elapsed > 1000.0 {
+                    elapsed = elapsed / 1000.0;
+                    units = "ms"
+                }
+                debug!(
+                    "Time to scan flash for binary address: {}{}",
+                    elapsed, units
+                );
+                self.timestamp.set(self.read_timer());
                 let new_app_address = self.compute_new_process_binary_address(
                     new_app_size,
                     pb_start_address,
@@ -1182,6 +1197,20 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
                 if new_app_address + new_app_size - 1 > total_flash_end {
                     Err(ProcessBinaryError::NotEnoughFlash)
                 } else {
+                    let mut elapsed = self.elapsed_time() as f32;
+                    let mut units = "us";
+                    if elapsed > 1000000.0 {
+                        elapsed = elapsed / 1000000.0;
+                        units = "s"
+                    }
+                    if elapsed > 1000.0 {
+                        elapsed = elapsed / 1000.0;
+                        units = "ms"
+                    }
+                    debug!(
+                        "Time to compute new process binary address: {}{}",
+                        elapsed, units
+                    );
                     Ok(new_app_address)
                 }
             }
@@ -1203,17 +1232,35 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
         &self,
         new_app_size: usize,
     ) -> Result<(usize, PaddingRequirement, usize, usize), ProcessBinaryError> {
+        // debug!("Process_loading check_flash_for_new_address tick value: {}", self.read_timer());
         const MAX_PROCS: usize = 10;
         let mut pb_start_address: [usize; MAX_PROCS] = [0; MAX_PROCS];
         let mut pb_end_address: [usize; MAX_PROCS] = [0; MAX_PROCS];
-        debug!("new_address_check timer started");
-        self.timestamp.set(self.read_timer());
+        // debug!("new_address_check timer started");
+        // self.timestamp.set(self.read_timer());
         match self.check_flash_for_valid_address(
             new_app_size,
             &mut pb_start_address,
             &mut pb_end_address,
         ) {
             Ok(app_address) => {
+                // let mut elapsed = self.elapsed_time() as f32;
+                // let mut units = "us";
+                // if elapsed > 1000000.0 {
+                //     elapsed = elapsed / 1000000.0;
+                //     units = "s"
+                // }
+                // if elapsed > 1000.0 {
+                //     elapsed = elapsed / 1000.0;
+                //     units = "ms"
+                // }
+                // debug!(
+                //     "Time to compute new available address: {}{}",
+                //     elapsed, units
+                // );
+                // debug!("Compute padding and neighbors timer started");
+                self.timestamp.set(self.read_timer());
+
                 let (pr, prev_app_addr, next_app_addr) = self
                     .compute_padding_requirement_and_neighbors(
                         app_address,
@@ -1221,9 +1268,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
                         &pb_start_address,
                         &pb_end_address,
                     );
-                let (padding_requirement, previous_app_end_addr, next_app_start_addr) =
-                    (pr, prev_app_addr, next_app_addr);
-                let mut elapsed: f32 = self.elapsed_time() as f32;
+
+                let mut elapsed = self.elapsed_time() as f32;
                 let mut units = "us";
                 if elapsed > 1000000.0 {
                     elapsed = elapsed / 1000000.0;
@@ -1233,10 +1279,11 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
                     elapsed = elapsed / 1000.0;
                     units = "ms"
                 }
-                debug!(
-                    "Time to compute new available address: {}{}",
-                    elapsed, units
-                );
+                debug!("Time to compute padding requirement: {}{}", elapsed, units);
+
+                let (padding_requirement, previous_app_end_addr, next_app_start_addr) =
+                    (pr, prev_app_addr, next_app_addr);
+
                 Ok((
                     app_address,
                     padding_requirement,

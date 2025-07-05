@@ -28,7 +28,7 @@ use kernel::deferred_call::DeferredCallClient;
 use kernel::dynamic_binary_storage::SequentialDynamicBinaryStorage;
 use kernel::hil;
 // use kernel::hil::time::Counter;
-use kernel::hil::time::{Frequency, Ticks};
+use kernel::hil::time::{Frequency, Ticks}; // Time};
 use kernel::platform::chip::Chip;
 use kernel::process::ProcessStandardDebug;
 use kernel::process::SequentialProcessLoaderMachine;
@@ -69,6 +69,7 @@ pub struct SequentialBinaryStorageComponent<
 > {
     nv_flash: &'static F,
     loader_driver: &'static SequentialProcessLoaderMachine<'static, C, D, R, T>,
+    // timer: &'static dyn Time<Frequency = R, Ticks = T>,
 }
 
 impl<
@@ -84,10 +85,12 @@ impl<
     pub fn new(
         nv_flash: &'static F,
         loader_driver: &'static SequentialProcessLoaderMachine<'static, C, D, R, T>,
+        // timer: &'static dyn Time<Frequency = R, Ticks = T>,
     ) -> Self {
         Self {
             nv_flash,
             loader_driver,
+            // timer,
         }
     }
 }
@@ -146,6 +149,7 @@ impl<
             nv_to_page,
             self.loader_driver,
             buffer,
+            // self.timer,
         ));
         hil::nonvolatile_storage::NonvolatileStorage::set_client(
             nv_to_page,

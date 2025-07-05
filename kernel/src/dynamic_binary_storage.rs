@@ -14,7 +14,7 @@ use crate::debug;
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
 use crate::hil::nonvolatile_storage::{NonvolatileStorage, NonvolatileStorageClient};
 // use crate::hil::time::Counter;
-use crate::hil::time::{Frequency, Ticks};
+use crate::hil::time::{Frequency, Ticks}; //Time};
 use crate::platform::chip::Chip;
 use crate::process::ProcessLoadingAsyncClient;
 use crate::process_loading::{
@@ -148,6 +148,8 @@ pub struct SequentialDynamicBinaryStorage<
     process_metadata: OptionalCell<ProcessLoadMetadata>,
     state: Cell<State>,
     deferred_call: DeferredCall,
+    // timer: &'static dyn Time<Frequency = R, Ticks = T>,
+    // timestamp: Cell<u32>,
 }
 
 impl<
@@ -164,6 +166,7 @@ impl<
         flash_driver: &'b F,
         loader_driver: &'a SequentialProcessLoaderMachine<'a, C, D, R, T>,
         buffer: &'static mut [u8],
+        // timer: &'static dyn Time<Frequency = R, Ticks = T>,
     ) -> Self {
         Self {
             flash_driver,
@@ -174,8 +177,29 @@ impl<
             process_metadata: OptionalCell::empty(),
             state: Cell::new(State::Idle),
             deferred_call: DeferredCall::new(),
+            // timer,
+            // timestamp: Cell::new(0),
         }
     }
+
+    // fn read_timer(&self) -> u32 {
+    //     self.timer.now().into_u32()
+    // }
+
+    // fn elapsed_time(&self) -> u32 {
+    //     let t2 = self.read_timer();
+    //     let t1 = self.timestamp.get();
+
+    //     // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+    //     self.timestamp.set(0);
+    //     // let freq = 32768;
+    //     let elapsed_ticks = t2.wrapping_sub(t1);
+
+    //     let freq = R::frequency();
+
+    //     // debug!("Frequency value: {:?}", freq);
+    //     elapsed_ticks * (1_000_000 / freq)
+    // }
 
     /// Function to reset variables and states.
     fn reset_process_loading_metadata(&self) {
@@ -358,6 +382,20 @@ impl<
 {
     fn handle_deferred_call(&self) {
         // We use deferred call to signal the completion of finalize
+        // let mut elapsed = self.elapsed_time() as f32;
+        // let mut units = "us";
+        // if elapsed > 1000.0 {
+        //     elapsed = elapsed / 1000.0;
+        //     units = "ms"
+        // }
+        // if elapsed > 1000000.0 {
+        //     elapsed = elapsed / 1000000.0;
+        //     units = "s"
+        // }
+        // debug!(
+        //     "Time to finalize app: {}{}",
+        //     elapsed, units
+        // );
         self.storage_client.map(|client| {
             client.finalize_done(Ok(()));
         });
@@ -389,6 +427,20 @@ impl<
                 self.state.set(State::AppWrite);
                 // Switch on which user generated this callback and trigger
                 // client callback.
+                // let mut elapsed = self.elapsed_time() as f32;
+                // let mut units = "us";
+                // if elapsed > 1000.0 {
+                //     elapsed = elapsed / 1000.0;
+                //     units = "ms"
+                // }
+                // if elapsed > 1000000.0 {
+                //     elapsed = elapsed / 1000000.0;
+                //     units = "s"
+                // }
+                // debug!(
+                //     "Time to write appdata: {}{}",
+                //     elapsed, units
+                // );
                 self.storage_client.map(|client| {
                     client.write_done(Ok(()), buffer, length);
                 });
@@ -428,6 +480,20 @@ impl<
                     } else {
                         self.state.set(State::AppWrite);
                         // Let the client know we are done setting up.
+                        // let mut elapsed = self.elapsed_time() as f32;
+                        // let mut units = "us";
+                        // if elapsed > 1000.0 {
+                        //     elapsed = elapsed / 1000.0;
+                        //     units = "ms"
+                        // }
+                        // if elapsed > 1000000.0 {
+                        //     elapsed = elapsed / 1000000.0;
+                        //     units = "s"
+                        // }
+                        // debug!(
+                        //     "Time to write setup padding app: {}{}",
+                        //     elapsed, units
+                        // );
                         self.storage_client.map(|client| {
                             client.setup_done(Ok(()));
                         });
@@ -468,6 +534,20 @@ impl<
 {
     fn process_loaded(&self, result: Result<(), ProcessLoadError>) {
         self.load_client.map(|client| {
+            // let mut elapsed = self.elapsed_time() as f32;
+            // let mut units = "us";
+            // if elapsed > 1000.0 {
+            //     elapsed = elapsed / 1000.0;
+            //     units = "ms"
+            // }
+            // if elapsed > 1000000.0 {
+            //     elapsed = elapsed / 1000000.0;
+            //     units = "s"
+            // }
+            // debug!(
+            //     "Time to load app: {}{}",
+            //     elapsed, units
+            // );
             client.load_done(result);
         });
     }
@@ -498,6 +578,8 @@ impl<
 
         if self.state.get() == State::Idle {
             self.state.set(State::Setup);
+            // self.timestamp.set(self.read_timer());
+            // debug!("DBS setup tick value: {}", self.timestamp.get());
             match self.loader_driver.check_flash_for_new_address(app_length) {
                 Ok((
                     new_app_start_address,
@@ -505,6 +587,20 @@ impl<
                     previous_app_end_addr,
                     next_app_start_addr,
                 )) => {
+                    // let mut elapsed = self.elapsed_time() as f32;
+                    // let mut units = "us";
+                    // if elapsed > 1000.0 {
+                    //     elapsed = elapsed / 1000.0;
+                    //     units = "ms"
+                    // }
+                    // if elapsed > 1000000.0 {
+                    //     elapsed = elapsed / 1000000.0;
+                    //     units = "s"
+                    // }
+                    // debug!(
+                    //     "Time to find new flash address and padding requirements: {}{}",
+                    //     elapsed, units
+                    // );
                     if let Some(mut metadata) = self.process_metadata.get() {
                         metadata.new_app_start_addr = new_app_start_address;
                         metadata.new_app_length = app_length;
@@ -514,6 +610,7 @@ impl<
                         self.process_metadata.set(metadata);
                     }
 
+                    // self.timestamp.set(self.read_timer());
                     match padding_requirement {
                         // If we decided we need to write a padding app after
                         // the new app, we go ahead and do it.
@@ -574,6 +671,7 @@ impl<
     fn write(&self, buffer: SubSliceMut<'static, u8>, offset: usize) -> Result<(), ErrorCode> {
         match self.state.get() {
             State::AppWrite => {
+                // self.timestamp.set(self.read_timer());
                 let res = self.write_buffer(buffer, offset);
                 match res {
                     Ok(()) => Ok(()),
@@ -596,6 +694,7 @@ impl<
     fn finalize(&self) -> Result<(), ErrorCode> {
         match self.state.get() {
             State::AppWrite => {
+                // self.timestamp.set(self.read_timer());
                 if let Some(metadata) = self.process_metadata.get() {
                     match metadata.padding_requirement {
                         // If we decided we need to write a padding app before the new
@@ -650,6 +749,7 @@ impl<
                 if let Some(metadata) = self.process_metadata.get() {
                     // Write padding header to the beginning of the new app address.
                     // This ensures that the flash space is reclaimed for future use.
+                    // self.timestamp.set(self.read_timer());
                     match self
                         .write_padding_app(metadata.new_app_length, metadata.new_app_start_addr)
                     {
@@ -692,6 +792,7 @@ impl<
         match self.state.get() {
             State::Load => {
                 if let Some(metadata) = self.process_metadata.get() {
+                    // self.timestamp.set(self.read_timer());
                     let _ = match self.loader_driver.load_new_process_binary(
                         metadata.new_app_start_addr,
                         metadata.new_app_length,

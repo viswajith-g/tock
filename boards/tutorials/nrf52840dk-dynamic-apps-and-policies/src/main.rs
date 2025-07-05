@@ -533,6 +533,7 @@ pub unsafe fn main() {
         components::dynamic_binary_storage::SequentialBinaryStorageComponent::new(
             virtual_flash_dbs,
             loader,
+            // timer0,
         )
         .finalize(components::sequential_binary_storage_component_static!(
             FlashUser,

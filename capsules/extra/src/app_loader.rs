@@ -298,7 +298,7 @@ impl<
             let _ = self.apps.enter(processid, move |app, kernel_data| {
                 app.pending_command = false;
 
-                let mut elapsed: f32 = self.elapsed_time() as f32;
+                let mut elapsed = self.elapsed_time() as f32;
                 let mut units = "us";
                 if elapsed > 1000000.0 {
                     elapsed = elapsed / 1000000.0;
@@ -330,14 +330,20 @@ impl<
                 self.buffer.replace(buffer);
                 app.pending_command = false;
 
-                // let t2 = self.read_timer();
-                // let t1 = self.time.get();
-                // let elapsed = t2.wrapping_sub(t1);
-
-                // debug!("Elapsed ticks between write and write_done: {}", elapsed);
-
-                // let elapsed = self.elapsed_time()  as f32;
-                // debug!("Elapsed time between write and write_done: {}us", elapsed);
+                let mut elapsed = self.write_elapsed_time() as f32;
+                let mut units = "us";
+                if elapsed > 1000000.0 {
+                    elapsed = elapsed / 1000000.0;
+                    units = "s"
+                }
+                if elapsed > 1000.0 {
+                    elapsed = elapsed / 1000.0;
+                    units = "ms"
+                }
+                debug!(
+                    "Elapsed time between write and write_done: {}{}",
+                    elapsed, units
+                );
 
                 // And then signal the app.
                 kernel_data
@@ -356,7 +362,8 @@ impl<
 
                 self.current_process.take();
 
-                let mut elapsed: f32 = self.write_elapsed_time() as f32 as f32;
+                let mut elapsed = self.elapsed_time() as f32;
+
                 let mut units = "us";
                 if elapsed > 1000000.0 {
                     elapsed = elapsed / 1000000.0;
@@ -367,7 +374,7 @@ impl<
                     units = "ms"
                 }
                 debug!(
-                    "Elapsed time between write and finalize_done: {}{}",
+                    "Elapsed time between finalize and finalize_done: {}{}",
                     elapsed, units
                 );
 
@@ -387,7 +394,7 @@ impl<
 
                 self.current_process.take();
 
-                let mut elapsed: f32 = self.elapsed_time() as f32;
+                let mut elapsed = self.elapsed_time() as f32;
                 let mut units = "us";
                 if elapsed > 1000000.0 {
                     elapsed = elapsed / 1000000.0;
@@ -453,7 +460,7 @@ impl<
                 // Signal the app.
                 self.current_process.take();
 
-                let mut elapsed: f32 = self.elapsed_time() as f32;
+                let mut elapsed = self.elapsed_time() as f32;
                 let mut units = "us";
                 if elapsed > 1000.0 {
                     elapsed = elapsed / 1000.0;
@@ -607,6 +614,7 @@ impl<
 
             3 => {
                 // Signal to kernel writing is done.
+                self.timestamp.set(self.read_timer());
                 let result = self.storage_driver.finalize();
                 match result {
                     Ok(()) => CommandReturn::success(),
