@@ -533,6 +533,7 @@ pub struct SequentialProcessLoaderMachine<
     run_mode: OptionalCell<SequentialProcessLoaderMachineRunMode>,
     timestamp: Cell<u32>,
     cred_timestamp: Cell<u32>,
+    load_timestamp: Cell<u32>,
     timer: &'static dyn Time<Frequency = F, Ticks = T>,
 }
 
@@ -574,6 +575,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
             state: OptionalCell::empty(),
             timestamp: Cell::new(0),
             cred_timestamp: Cell::new(0),
+            load_timestamp: Cell::new(0),
             timer,
         }
     }
@@ -598,6 +600,20 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
 
         // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
         self.cred_timestamp.set(0);
+        // let freq = 32768;
+        let elapsed_ticks = t2.wrapping_sub(t1);
+
+        let freq = F::frequency();
+        // debug!("Frequency value: {:?}", freq);
+        elapsed_ticks * (1_000_000 / freq)
+    }
+
+    fn load_elapsed_time(&self) -> u32 {
+        let t2 = self.read_timer();
+        let t1 = self.load_timestamp.get();
+
+        // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+        self.load_timestamp.set(0);
         // let freq = 32768;
         let elapsed_ticks = t2.wrapping_sub(t1);
 
@@ -644,17 +660,17 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
                 self.cred_timestamp.set(self.read_timer());
                 match self.checker.check(pb) {
                     Ok(()) => {
-                        let mut elapsed = self.cred_elapsed_time() as f32;
-                        let mut units = "us";
-                        if elapsed > 1000000.0 {
-                            elapsed = elapsed / 1000000.0;
-                            units = "s"
-                        }
-                        if elapsed > 1000.0 {
-                            elapsed = elapsed / 1000.0;
-                            units = "ms"
-                        }
-                        debug!("Time elapsed to check app credential: {}{}", elapsed, units);
+                        // let mut elapsed = self.cred_elapsed_time() as f32;
+                        // let mut units = "us";
+                        // if elapsed > 1000000.0 {
+                        //     elapsed = elapsed * 0.000001;
+                        //     units = "s"
+                        // }
+                        // if elapsed > 1000.0 {
+                        //     elapsed = elapsed * 0.001;
+                        //     units = "ms"
+                        // }
+                        // debug!("Time elapsed to check app credential synchronous: {}{}", elapsed, units);
                     }
                     Err(e) => {
                         self.get_current_client().map(|client| {
@@ -713,6 +729,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
     ///
     /// This verifies that the discovered processes are valid to run.
     fn load_process_objects(&self) -> Result<(), ()> {
+        self.load_timestamp.set(self.read_timer());
         let proc_binaries = self.proc_binaries.take().ok_or(())?;
         let proc_binaries_len = proc_binaries.len();
 
@@ -831,6 +848,17 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
 
         // We have iterated all discovered `ProcessBinary`s and loaded what we
         // could so now we can signal that process loading is finished.
+        let mut elapsed = self.load_elapsed_time() as f32;
+        let mut units = "us";
+        if elapsed > 1000000.0 {
+            elapsed = elapsed * 0.000001;
+            units = "s"
+        }
+        if elapsed > 1000.0 {
+            elapsed = elapsed * 0.001;
+            units = "ms"
+        }
+        debug!("Time spent in load_process_objects: {}{}", elapsed, units);
         self.get_current_client().map(|client| {
             client.process_loading_finished();
         });
@@ -1177,11 +1205,11 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
                 let mut elapsed = self.elapsed_time() as f32;
                 let mut units = "us";
                 if elapsed > 1000000.0 {
-                    elapsed = elapsed / 1000000.0;
+                    elapsed = elapsed * 0.000001;
                     units = "s"
                 }
                 if elapsed > 1000.0 {
-                    elapsed = elapsed / 1000.0;
+                    elapsed = elapsed * 0.001;
                     units = "ms"
                 }
                 debug!(
@@ -1200,11 +1228,11 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
                     let mut elapsed = self.elapsed_time() as f32;
                     let mut units = "us";
                     if elapsed > 1000000.0 {
-                        elapsed = elapsed / 1000000.0;
+                        elapsed = elapsed * 0.000001;
                         units = "s"
                     }
                     if elapsed > 1000.0 {
-                        elapsed = elapsed / 1000.0;
+                        elapsed = elapsed * 0.001;
                         units = "ms"
                     }
                     debug!(
@@ -1244,21 +1272,6 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
             &mut pb_end_address,
         ) {
             Ok(app_address) => {
-                // let mut elapsed = self.elapsed_time() as f32;
-                // let mut units = "us";
-                // if elapsed > 1000000.0 {
-                //     elapsed = elapsed / 1000000.0;
-                //     units = "s"
-                // }
-                // if elapsed > 1000.0 {
-                //     elapsed = elapsed / 1000.0;
-                //     units = "ms"
-                // }
-                // debug!(
-                //     "Time to compute new available address: {}{}",
-                //     elapsed, units
-                // );
-                // debug!("Compute padding and neighbors timer started");
                 self.timestamp.set(self.read_timer());
 
                 let (pr, prev_app_addr, next_app_addr) = self
@@ -1272,11 +1285,11 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
                 let mut elapsed = self.elapsed_time() as f32;
                 let mut units = "us";
                 if elapsed > 1000000.0 {
-                    elapsed = elapsed / 1000000.0;
+                    elapsed = elapsed * 0.000001;
                     units = "s"
                 }
                 if elapsed > 1000.0 {
-                    elapsed = elapsed / 1000.0;
+                    elapsed = elapsed * 0.001;
                     units = "ms"
                 }
                 debug!("Time to compute padding requirement: {}{}", elapsed, units);
@@ -1421,12 +1434,26 @@ impl<C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks>
         // Check if this process was approved by the checker.
         match result {
             Ok(optional_credential) => {
+                let mut elapsed = self.cred_elapsed_time() as f32;
+                let mut units = "us";
+                if elapsed > 1000000.0 {
+                    elapsed = elapsed * 0.000001;
+                    units = "s"
+                }
+                if elapsed > 1000.0 {
+                    elapsed = elapsed * 0.001;
+                    units = "ms"
+                }
+                debug!("Time spent to check credential: {}{}", elapsed, units);
+                // debug!("Compute padding and neighbors timer started");
                 if config::CONFIG.debug_load_processes {
                     debug!(
                         "Loading: Check succeeded for process {}",
                         process_binary.header.get_package_name().unwrap_or("")
                     );
                 }
+
+                self.cred_timestamp.set(self.read_timer());
                 // Save the checked process binary now that we know it is valid.
                 match self.find_open_process_binary_slot() {
                     Some(index) => {
@@ -1456,6 +1483,17 @@ impl<C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks>
                 });
             }
         }
+        let mut elapsed = self.cred_elapsed_time() as f32;
+        let mut units = "us";
+        if elapsed > 1000000.0 {
+            elapsed = elapsed * 0.000001;
+            units = "s"
+        }
+        if elapsed > 1000.0 {
+            elapsed = elapsed * 0.001;
+            units = "ms"
+        }
+        debug!("Time spent to store process object: {}{}", elapsed, units);
 
         // Try to load the next process in flash.
         self.deferred_call.set();

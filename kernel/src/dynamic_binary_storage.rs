@@ -385,11 +385,11 @@ impl<
         // let mut elapsed = self.elapsed_time() as f32;
         // let mut units = "us";
         // if elapsed > 1000.0 {
-        //     elapsed = elapsed / 1000.0;
+        //     elapsed = elapsed * 0.001;
         //     units = "ms"
         // }
         // if elapsed > 1000000.0 {
-        //     elapsed = elapsed / 1000000.0;
+        //     elapsed = elapsed * 0.000001;
         //     units = "s"
         // }
         // debug!(
@@ -430,11 +430,11 @@ impl<
                 // let mut elapsed = self.elapsed_time() as f32;
                 // let mut units = "us";
                 // if elapsed > 1000.0 {
-                //     elapsed = elapsed / 1000.0;
+                //     elapsed = elapsed * 0.001;
                 //     units = "ms"
                 // }
                 // if elapsed > 1000000.0 {
-                //     elapsed = elapsed / 1000000.0;
+                //     elapsed = elapsed * 0.000001;
                 //     units = "s"
                 // }
                 // debug!(
@@ -483,11 +483,11 @@ impl<
                         // let mut elapsed = self.elapsed_time() as f32;
                         // let mut units = "us";
                         // if elapsed > 1000.0 {
-                        //     elapsed = elapsed / 1000.0;
+                        //     elapsed = elapsed * 0.001;
                         //     units = "ms"
                         // }
                         // if elapsed > 1000000.0 {
-                        //     elapsed = elapsed / 1000000.0;
+                        //     elapsed = elapsed * 0.000001;
                         //     units = "s"
                         // }
                         // debug!(
@@ -537,11 +537,11 @@ impl<
             // let mut elapsed = self.elapsed_time() as f32;
             // let mut units = "us";
             // if elapsed > 1000.0 {
-            //     elapsed = elapsed / 1000.0;
+            //     elapsed = elapsed * 0.001;
             //     units = "ms"
             // }
             // if elapsed > 1000000.0 {
-            //     elapsed = elapsed / 1000000.0;
+            //     elapsed = elapsed * 0.000001;
             //     units = "s"
             // }
             // debug!(
@@ -590,11 +590,11 @@ impl<
                     // let mut elapsed = self.elapsed_time() as f32;
                     // let mut units = "us";
                     // if elapsed > 1000.0 {
-                    //     elapsed = elapsed / 1000.0;
+                    //     elapsed = elapsed * 0.001;
                     //     units = "ms"
                     // }
                     // if elapsed > 1000000.0 {
-                    //     elapsed = elapsed / 1000000.0;
+                    //     elapsed = elapsed * 0.000001;
                     //     units = "s"
                     // }
                     // debug!(
