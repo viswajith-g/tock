@@ -141,7 +141,7 @@ pub struct AppLoader<
     new_app_length: Cell<usize>,
     /// Time provider.
     timestamp: Cell<u32>,
-    write_timestamp: OptionalCell<u32>,
+    // write_timestamp: OptionalCell<u32>,
     timer: &'static dyn Time<Frequency = F, Ticks = T>,
 }
 
@@ -172,40 +172,35 @@ impl<
             current_process: OptionalCell::empty(),
             new_app_length: Cell::new(0),
             timestamp: Cell::new(0),
-            write_timestamp: OptionalCell::empty(),
+            // write_timestamp: OptionalCell::empty(),
             timer,
         }
     }
 
-    fn elapsed_time(&self) -> u32 {
+    fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
         let t2 = self.read_timer();
-        let t1 = self.timestamp.get();
+        let t1 = timestamp.get();
 
         // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
-        self.timestamp.set(0);
+        timestamp.set(0);
         // let freq = 32768;
         let elapsed_ticks = t2.wrapping_sub(t1);
 
         let freq = F::frequency();
-
         // debug!("Frequency value: {:?}", freq);
-        elapsed_ticks * (1_000_000 / freq)
-    }
+        let mut elapsed = (elapsed_ticks * (1_000_000 / freq)) as f32;
 
-    fn write_elapsed_time(&self) -> u32 {
-        let t2 = self.read_timer();
-        if let Some(t1) = self.write_timestamp.take() {
-            // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
-
-            let elapsed_ticks = t2.wrapping_sub(t1);
-            let freq = F::frequency();
-
-            // debug!("Frequency value: {:?}", freq);
-            elapsed_ticks * (1_000_000 / freq)
-        } else {
-            debug!("No timestamp stored!");
-            0
+        let mut units = "us";
+        if elapsed > 1000000.0 {
+            elapsed = elapsed * 0.000001;
+            units = "s";
         }
+        if elapsed > 1000.0 {
+            elapsed = elapsed * 0.001;
+            units = "ms";
+        }
+
+        (elapsed, units)
     }
 
     fn read_timer(&self) -> u32 {
@@ -298,16 +293,7 @@ impl<
             let _ = self.apps.enter(processid, move |app, kernel_data| {
                 app.pending_command = false;
 
-                let mut elapsed = self.elapsed_time() as f32;
-                let mut units = "us";
-                if elapsed > 1000000.0 {
-                    elapsed = elapsed * 0.000001;
-                    units = "s"
-                }
-                if elapsed > 1000.0 {
-                    elapsed = elapsed * 0.001;
-                    units = "ms"
-                }
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
                 debug!(
                     "Elapsed time between setup and setup_done: {}{}",
                     elapsed, units
@@ -330,16 +316,7 @@ impl<
                 self.buffer.replace(buffer);
                 app.pending_command = false;
 
-                let mut elapsed = self.write_elapsed_time() as f32;
-                let mut units = "us";
-                if elapsed > 1000000.0 {
-                    elapsed = elapsed * 0.000001;
-                    units = "s"
-                }
-                if elapsed > 1000.0 {
-                    elapsed = elapsed * 0.001;
-                    units = "ms"
-                }
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
                 debug!(
                     "Elapsed time between write and write_done: {}{}",
                     elapsed, units
@@ -362,17 +339,7 @@ impl<
 
                 self.current_process.take();
 
-                let mut elapsed = self.elapsed_time() as f32;
-
-                let mut units = "us";
-                if elapsed > 1000000.0 {
-                    elapsed = elapsed * 0.000001;
-                    units = "s"
-                }
-                if elapsed > 1000.0 {
-                    elapsed = elapsed * 0.001;
-                    units = "ms"
-                }
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
                 debug!(
                     "Elapsed time between finalize and finalize_done: {}{}",
                     elapsed, units
@@ -394,16 +361,7 @@ impl<
 
                 self.current_process.take();
 
-                let mut elapsed = self.elapsed_time() as f32;
-                let mut units = "us";
-                if elapsed > 1000000.0 {
-                    elapsed = elapsed * 0.000001;
-                    units = "s"
-                }
-                if elapsed > 1000.0 {
-                    elapsed = elapsed * 0.001;
-                    units = "ms"
-                }
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
                 debug!(
                     "Elapsed time between abort and abort_done: {}{}",
                     elapsed, units
@@ -460,16 +418,7 @@ impl<
                 // Signal the app.
                 self.current_process.take();
 
-                let mut elapsed = self.elapsed_time() as f32;
-                let mut units = "us";
-                if elapsed > 1000.0 {
-                    elapsed = elapsed * 0.001;
-                    units = "ms"
-                }
-                if elapsed > 1000000.0 {
-                    elapsed = elapsed * 0.000001;
-                    units = "s"
-                }
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
                 debug!(
                     "Elapsed time between load and load_done: {}{}",
                     elapsed, units
@@ -592,9 +541,7 @@ impl<
             2 => {
                 // Request kernel to write app to flash.
 
-                if self.write_timestamp.is_none() {
-                    self.write_timestamp.set(self.read_timer());
-                }
+                self.timestamp.set(self.read_timer());
                 let res = self.write(arg1, arg2, processid);
                 match res {
                     Ok(()) => CommandReturn::success(),
