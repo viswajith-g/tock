@@ -63,9 +63,11 @@ use core::cmp;
 
 use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
 use kernel::hil;
+use kernel::hil::time::Ticks;
 use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
 use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
+use kernel::{debug, debug_now};
 use kernel::{ErrorCode, ProcessId};
 
 /// Syscall driver number.
@@ -170,6 +172,8 @@ pub struct NonvolatileStorage<'a> {
     kernel_readwrite_length: Cell<usize>,
     // Where to read/write from the kernel request.
     kernel_readwrite_address: Cell<usize>,
+    // Store timestamp for debug
+    timestamp: Cell<u32>,
 }
 
 impl<'a> NonvolatileStorage<'a> {
@@ -202,7 +206,37 @@ impl<'a> NonvolatileStorage<'a> {
             kernel_buffer: TakeCell::empty(),
             kernel_readwrite_length: Cell::new(0),
             kernel_readwrite_address: Cell::new(0),
+            timestamp: Cell::new(0),
         }
+    }
+
+    fn read_timer(&self) -> u32 {
+        debug_now!()
+    }
+
+    fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
+        let t2 = self.read_timer();
+        let t1 = timestamp.get();
+
+        timestamp.set(0);
+        let elapsed_ticks = t2.wrapping_sub(t1);
+
+        // let freq = R::frequency();
+        // debug!("Frequency value: {:?}", freq);
+        // Clock set to 1Mhz
+        let mut elapsed = (elapsed_ticks) as f32;
+
+        let mut units = "us";
+        if elapsed > 1000000.0 {
+            elapsed = elapsed * 0.000001;
+            units = "s";
+        }
+        if elapsed > 1000.0 {
+            elapsed = elapsed * 0.001;
+            units = "ms";
+        }
+
+        (elapsed, units)
     }
 
     // Check so see if we are doing something. If not, go ahead and do this
@@ -216,6 +250,7 @@ impl<'a> NonvolatileStorage<'a> {
         processid: Option<ProcessId>,
     ) -> Result<(), ErrorCode> {
         // Do bounds check.
+        self.timestamp.set(self.read_timer());
         match command {
             NonvolatileCommand::UserspaceRead | NonvolatileCommand::UserspaceWrite => {
                 // Userspace sees memory that starts at address 0 even if it
@@ -240,10 +275,15 @@ impl<'a> NonvolatileStorage<'a> {
             }
         }
 
+        let (elapsed, units) = self.elapsed_time(&self.timestamp);
+        debug!("NVMC Buffer Checks Elapsed Time: {}{}", elapsed, units);
+
+        self.timestamp.set(self.read_timer());
         // Do very different actions if this is a call from userspace
         // or from the kernel.
         match command {
             NonvolatileCommand::UserspaceRead | NonvolatileCommand::UserspaceWrite => {
+                debug!("Userspace Command");
                 processid.map_or(Err(ErrorCode::FAIL), |processid| {
                     self.apps
                         .enter(processid, |app, kernel_data| {
@@ -274,6 +314,12 @@ impl<'a> NonvolatileStorage<'a> {
                                 // Mark this app as active, and then execute the command.
                                 self.current_user.set(NonvolatileUser::App { processid });
 
+                                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                                debug!(
+                                    "NVMC Userspace call check Elapsed Time: {}{}",
+                                    elapsed, units
+                                );
+                                self.timestamp.set(self.read_timer());
                                 // Need to copy bytes if this is a write!
                                 if command == NonvolatileCommand::UserspaceWrite {
                                     let _ = kernel_data
@@ -298,6 +344,13 @@ impl<'a> NonvolatileStorage<'a> {
                                         });
                                 }
 
+                                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                                debug!(
+                                    "NVMC Userspace Buffer Copy to Kernel Elapsed Time: {}{}",
+                                    elapsed, units
+                                );
+
+                                self.timestamp.set(self.read_timer());
                                 self.userspace_call_driver(command, offset, active_len)
                             } else {
                                 // Some app is using the storage, we must wait.
@@ -318,7 +371,10 @@ impl<'a> NonvolatileStorage<'a> {
                         .unwrap_or_else(|err| Err(err.into()))
                 })
             }
+
             NonvolatileCommand::KernelRead | NonvolatileCommand::KernelWrite => {
+                debug!("Kernel Command");
+                self.timestamp.set(self.read_timer());
                 self.kernel_buffer
                     .take()
                     .map_or(Err(ErrorCode::NOMEM), |kernel_buffer| {
@@ -436,6 +492,8 @@ impl<'a> NonvolatileStorage<'a> {
 /// This is the callback client for the underlying physical storage driver.
 impl hil::nonvolatile_storage::NonvolatileStorageClient for NonvolatileStorage<'_> {
     fn read_done(&self, buffer: &'static mut [u8], length: usize) {
+        let (elapsed, units) = self.elapsed_time(&self.timestamp);
+        debug!("NVMC Read Done Elapsed Time: {}{}", elapsed, units);
         // Switch on which user of this capsule generated this callback.
         self.current_user.take().map(|user| {
             match user {
@@ -477,6 +535,8 @@ impl hil::nonvolatile_storage::NonvolatileStorageClient for NonvolatileStorage<'
 
     fn write_done(&self, buffer: &'static mut [u8], length: usize) {
         // Switch on which user of this capsule generated this callback.
+        let (elapsed, units) = self.elapsed_time(&self.timestamp);
+        debug!("NVMC Write Done Elapsed Time: {}{}", elapsed, units);
         self.current_user.take().map(|user| {
             match user {
                 NonvolatileUser::Kernel => {

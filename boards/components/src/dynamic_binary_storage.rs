@@ -27,8 +27,6 @@ use kernel::component::Component;
 use kernel::deferred_call::DeferredCallClient;
 use kernel::dynamic_binary_storage::SequentialDynamicBinaryStorage;
 use kernel::hil;
-// use kernel::hil::time::Counter;
-use kernel::hil::time::{Frequency, Ticks}; // Time};
 use kernel::platform::chip::Chip;
 use kernel::process::ProcessStandardDebug;
 use kernel::process::SequentialProcessLoaderMachine;
@@ -38,7 +36,7 @@ pub type NVPages<F> = capsules_extra::nonvolatile_to_pages::NonvolatileToPages<'
 // Setup static space for the objects.
 #[macro_export]
 macro_rules! sequential_binary_storage_component_static {
-    ($F:ty, $C:ty, $D:ty, $R:ty, $T:ty $(,)?) => {{
+    ($F:ty, $C:ty, $D:ty $(,)?) => {{
         let page = kernel::static_buf!(<$F as kernel::hil::flash::Flash>::Page);
         let ntp = kernel::static_buf!(
             capsules_extra::nonvolatile_to_pages::NonvolatileToPages<'static, $F>
@@ -50,8 +48,6 @@ macro_rules! sequential_binary_storage_component_static {
                 $C,
                 $D,
                 capsules_extra::nonvolatile_to_pages::NonvolatileToPages<'static, $F>,
-                $R,
-                $T,
             >
         );
         let buffer = kernel::static_buf!([u8; kernel::dynamic_binary_storage::BUF_LEN]);
@@ -64,12 +60,9 @@ pub struct SequentialBinaryStorageComponent<
     F: 'static + hil::flash::Flash + hil::flash::HasClient<'static, NonvolatileToPages<'static, F>>,
     C: Chip + 'static,
     D: ProcessStandardDebug + 'static,
-    R: 'static + Frequency,
-    T: 'static + Ticks,
 > {
     nv_flash: &'static F,
-    loader_driver: &'static SequentialProcessLoaderMachine<'static, C, D, R, T>,
-    // timer: &'static dyn Time<Frequency = R, Ticks = T>,
+    loader_driver: &'static SequentialProcessLoaderMachine<'static, C, D>,
 }
 
 impl<
@@ -78,19 +71,15 @@ impl<
             + hil::flash::HasClient<'static, NonvolatileToPages<'static, F>>,
         C: 'static + Chip,
         D: 'static + ProcessStandardDebug,
-        R: 'static + Frequency,
-        T: 'static + Ticks,
-    > SequentialBinaryStorageComponent<F, C, D, R, T>
+    > SequentialBinaryStorageComponent<F, C, D>
 {
     pub fn new(
         nv_flash: &'static F,
-        loader_driver: &'static SequentialProcessLoaderMachine<'static, C, D, R, T>,
-        // timer: &'static dyn Time<Frequency = R, Ticks = T>,
+        loader_driver: &'static SequentialProcessLoaderMachine<'static, C, D>,
     ) -> Self {
         Self {
             nv_flash,
             loader_driver,
-            // timer,
         }
     }
 }
@@ -101,23 +90,13 @@ impl<
             + hil::flash::HasClient<'static, NonvolatileToPages<'static, F>>,
         C: 'static + Chip,
         D: 'static + ProcessStandardDebug,
-        R: 'static + Frequency,
-        T: 'static + Ticks,
-    > Component for SequentialBinaryStorageComponent<F, C, D, R, T>
+    > Component for SequentialBinaryStorageComponent<F, C, D>
 {
     type StaticInput = (
         &'static mut MaybeUninit<<F as hil::flash::Flash>::Page>,
         &'static mut MaybeUninit<NonvolatileToPages<'static, F>>,
         &'static mut MaybeUninit<
-            SequentialDynamicBinaryStorage<
-                'static,
-                'static,
-                C,
-                D,
-                NonvolatileToPages<'static, F>,
-                R,
-                T,
-            >,
+            SequentialDynamicBinaryStorage<'static, 'static, C, D, NonvolatileToPages<'static, F>>,
         >,
         &'static mut MaybeUninit<[u8; kernel::dynamic_binary_storage::BUF_LEN]>,
     );
@@ -127,8 +106,6 @@ impl<
         C,
         D,
         NonvolatileToPages<'static, F>,
-        R,
-        T,
     >;
 
     fn finalize(self, static_buffer: Self::StaticInput) -> Self::Output {
@@ -149,7 +126,6 @@ impl<
             nv_to_page,
             self.loader_driver,
             buffer,
-            // self.timer,
         ));
         hil::nonvolatile_storage::NonvolatileStorage::set_client(
             nv_to_page,

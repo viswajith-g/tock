@@ -67,20 +67,18 @@
 
 use core::cell::Cell;
 use core::cmp;
-use kernel::debug;
+use kernel::{debug, debug_now};
 
 use kernel::dynamic_binary_storage;
 use kernel::errorcode::into_statuscode;
 use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
+use kernel::hil::time::Ticks;
 use kernel::process::ProcessLoadError;
 use kernel::processbuffer::ReadableProcessBuffer;
 use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::{ErrorCode, ProcessId};
-// use kernel::hil::time::{self, Time, ConvertTicks};
-use kernel::hil::time::{Frequency, Ticks, Time};
-// use nrf52::timer;
 
 /// Syscall driver number.
 use capsules_core::driver;
@@ -110,7 +108,7 @@ mod ro_allow {
     pub const COUNT: u8 = 1;
 }
 
-pub const BUF_LEN: usize = 512;
+pub const BUF_LEN: usize = 4096;
 
 #[derive(Default)]
 pub struct App {
@@ -120,8 +118,6 @@ pub struct App {
 pub struct AppLoader<
     S: dynamic_binary_storage::DynamicBinaryStore + 'static,
     L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-    F: 'static + Frequency,
-    T: 'static + Ticks,
 > {
     // The underlying driver for the process flashing and loading.
     storage_driver: &'static S,
@@ -139,18 +135,14 @@ pub struct AppLoader<
     // What issued the currently executing call.
     current_process: OptionalCell<ProcessId>,
     new_app_length: Cell<usize>,
-    /// Time provider.
+    // Store timestamp for debug
     timestamp: Cell<u32>,
-    // write_timestamp: OptionalCell<u32>,
-    timer: &'static dyn Time<Frequency = F, Ticks = T>,
 }
 
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-        F: 'static + Frequency,
-        T: 'static + Ticks,
-    > AppLoader<S, L, F, T>
+    > AppLoader<S, L>
 {
     pub fn new(
         grant: Grant<
@@ -162,8 +154,7 @@ impl<
         storage_driver: &'static S,
         load_driver: &'static L,
         buffer: &'static mut [u8],
-        timer: &'static dyn Time<Frequency = F, Ticks = T>,
-    ) -> AppLoader<S, L, F, T> {
+    ) -> AppLoader<S, L> {
         AppLoader {
             apps: grant,
             storage_driver,
@@ -172,23 +163,24 @@ impl<
             current_process: OptionalCell::empty(),
             new_app_length: Cell::new(0),
             timestamp: Cell::new(0),
-            // write_timestamp: OptionalCell::empty(),
-            timer,
         }
+    }
+
+    fn read_timer(&self) -> u32 {
+        debug_now!()
     }
 
     fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
         let t2 = self.read_timer();
         let t1 = timestamp.get();
 
-        // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
         timestamp.set(0);
-        // let freq = 32768;
         let elapsed_ticks = t2.wrapping_sub(t1);
 
-        let freq = F::frequency();
+        // let freq = R::frequency();
         // debug!("Frequency value: {:?}", freq);
-        let mut elapsed = (elapsed_ticks * (1_000_000 / freq)) as f32;
+        // Clock set to 1Mhz
+        let mut elapsed = (elapsed_ticks) as f32;
 
         let mut units = "us";
         if elapsed > 1000000.0 {
@@ -201,10 +193,6 @@ impl<
         }
 
         (elapsed, units)
-    }
-
-    fn read_timer(&self) -> u32 {
-        self.timer.now().into_u32()
     }
 
     /// Copy data from the shared buffer with app and request kernel to
@@ -282,9 +270,7 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-        F: 'static + Frequency,
-        T: 'static + Ticks,
-    > dynamic_binary_storage::DynamicBinaryStoreClient for AppLoader<S, L, F, T>
+    > dynamic_binary_storage::DynamicBinaryStoreClient for AppLoader<S, L>
 {
     /// Let the requesting app know we are done setting up for the new app
     fn setup_done(&self, result: Result<(), ErrorCode>) {
@@ -378,9 +364,7 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-        F: 'static + Frequency,
-        T: 'static + Ticks,
-    > dynamic_binary_storage::DynamicProcessLoadClient for AppLoader<S, L, F, T>
+    > dynamic_binary_storage::DynamicProcessLoadClient for AppLoader<S, L>
 {
     /// Let the requesting app know we are done loading the new process
     ///
@@ -436,9 +420,7 @@ impl<
 impl<
         S: dynamic_binary_storage::DynamicBinaryStore + 'static,
         L: dynamic_binary_storage::DynamicProcessLoad + 'static,
-        F: 'static + Frequency,
-        T: 'static + Ticks,
-    > SyscallDriver for AppLoader<S, L, F, T>
+    > SyscallDriver for AppLoader<S, L>
 {
     /// Command interface.
     ///
@@ -522,7 +504,6 @@ impl<
             1 => {
                 // Request kernel to allocate resources for
                 // an app with size passed via `arg1`.
-
                 self.timestamp.set(self.read_timer());
                 let res = self.storage_driver.setup(arg1);
                 match res {
@@ -540,7 +521,6 @@ impl<
 
             2 => {
                 // Request kernel to write app to flash.
-
                 self.timestamp.set(self.read_timer());
                 let res = self.write(arg1, arg2, processid);
                 match res {

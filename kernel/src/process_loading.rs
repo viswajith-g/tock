@@ -17,9 +17,8 @@ use core::fmt;
 
 use crate::capabilities::ProcessManagementCapability;
 use crate::config;
-use crate::debug;
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
-use crate::hil::time::{Frequency, Ticks, Time};
+use crate::hil::time::Ticks;
 use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::process::{Process, ShortId};
@@ -31,6 +30,7 @@ use crate::process_policies::ProcessStandardStoragePermissionsPolicy;
 use crate::process_standard::ProcessStandard;
 use crate::process_standard::{ProcessStandardDebug, ProcessStandardDebugFull};
 use crate::utilities::cells::{MapCell, OptionalCell};
+use crate::{debug, debug_now};
 
 /// Errors that can occur when trying to load and create processes.
 pub enum ProcessLoadError {
@@ -494,13 +494,8 @@ pub enum PaddingRequirement {
 /// structures stored in the `procs` array. This machine scans the footers in
 /// the TBF for cryptographic credentials for binary integrity, passing them to
 /// the checker to decide whether the process has sufficient credentials to run.
-pub struct SequentialProcessLoaderMachine<
-    'a,
-    C: Chip + 'static,
-    D: ProcessStandardDebug + 'static,
-    F: 'static + Frequency,
-    T: 'static + Ticks,
-> {
+pub struct SequentialProcessLoaderMachine<'a, C: Chip + 'static, D: ProcessStandardDebug + 'static>
+{
     /// Client to notify as processes are loaded and process loading finishes after boot.
     boot_client: OptionalCell<&'a dyn ProcessLoadingAsyncClient>,
     /// Client to notify as processes are loaded and process loading finishes during runtime.
@@ -531,15 +526,13 @@ pub struct SequentialProcessLoaderMachine<
     state: OptionalCell<SequentialProcessLoaderMachineState>,
     /// Current operating mode of the loading machine.
     run_mode: OptionalCell<SequentialProcessLoaderMachineRunMode>,
+    /// Store timestamp for debug
     timestamp: Cell<u32>,
     cred_timestamp: Cell<u32>,
     load_timestamp: Cell<u32>,
-    timer: &'static dyn Time<Frequency = F, Ticks = T>,
 }
 
-impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + Ticks>
-    SequentialProcessLoaderMachine<'a, C, D, F, T>
-{
+impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C, D> {
     /// This function is made `pub` so that board files can use it, but loading
     /// processes from slices of flash an memory is fundamentally unsafe.
     /// Therefore, we require the `ProcessManagementCapability` to call this
@@ -555,7 +548,6 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
         storage_policy: &'static dyn ProcessStandardStoragePermissionsPolicy<C, D>,
         policy: &'static dyn AppIdPolicy,
         _capability_management: &dyn ProcessManagementCapability,
-        timer: &'static dyn Time<Frequency = F, Ticks = T>,
     ) -> Self {
         Self {
             deferred_call: DeferredCall::new(),
@@ -576,22 +568,24 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
             timestamp: Cell::new(0),
             cred_timestamp: Cell::new(0),
             load_timestamp: Cell::new(0),
-            timer,
         }
+    }
+
+    fn read_timer(&self) -> u32 {
+        debug_now!()
     }
 
     fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
         let t2 = self.read_timer();
         let t1 = timestamp.get();
 
-        // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
         timestamp.set(0);
-        // let freq = 32768;
         let elapsed_ticks = t2.wrapping_sub(t1);
 
-        let freq = F::frequency();
+        // let freq = R::frequency();
         // debug!("Frequency value: {:?}", freq);
-        let mut elapsed = (elapsed_ticks * (1_000_000 / freq)) as f32;
+        // Clock set to 1Mhz
+        let mut elapsed = (elapsed_ticks) as f32;
 
         let mut units = "us";
         if elapsed > 1000000.0 {
@@ -604,10 +598,6 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
         }
 
         (elapsed, units)
-    }
-
-    fn read_timer(&self) -> u32 {
-        self.timer.now().into_u32()
     }
 
     /// Set the runtime client to receive callbacks about process loading and when
@@ -1319,8 +1309,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: 'static + Frequency, T: 'static + 
     }
 }
 
-impl<'a, C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks> ProcessLoadingAsync<'a>
-    for SequentialProcessLoaderMachine<'a, C, D, F, T>
+impl<'a, C: Chip, D: ProcessStandardDebug> ProcessLoadingAsync<'a>
+    for SequentialProcessLoaderMachine<'a, C, D>
 {
     fn set_client(&self, client: &'a dyn ProcessLoadingAsyncClient) {
         self.boot_client.set(client);
@@ -1340,8 +1330,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks> ProcessLoadin
     }
 }
 
-impl<C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks> DeferredCallClient
-    for SequentialProcessLoaderMachine<'_, C, D, F, T>
+impl<C: Chip, D: ProcessStandardDebug> DeferredCallClient
+    for SequentialProcessLoaderMachine<'_, C, D>
 {
     fn handle_deferred_call(&self) {
         // We use deferred calls to start the operation in the async loop.
@@ -1371,9 +1361,8 @@ impl<C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks> DeferredCallClien
     }
 }
 
-impl<C: Chip, D: ProcessStandardDebug, F: Frequency, T: Ticks>
-    crate::process_checker::ProcessCheckerMachineClient
-    for SequentialProcessLoaderMachine<'_, C, D, F, T>
+impl<C: Chip, D: ProcessStandardDebug> crate::process_checker::ProcessCheckerMachineClient
+    for SequentialProcessLoaderMachine<'_, C, D>
 {
     fn done(
         &self,
