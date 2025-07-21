@@ -10,6 +10,7 @@ use core::cell::Cell;
 use core::ops::{Index, IndexMut};
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
 use kernel::hil;
+use kernel::hil::time::Ticks;
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::cells::TakeCell;
 use kernel::utilities::cells::VolatileCell;
@@ -17,6 +18,7 @@ use kernel::utilities::registers::interfaces::{Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite};
 use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
+use kernel::{debug, debug_now};
 
 const NVMC_BASE: StaticRef<NvmcRegisters> =
     unsafe { StaticRef::new(0x4001E400 as *const NvmcRegisters) };
@@ -206,6 +208,7 @@ pub struct Nvmc {
     buffer: TakeCell<'static, NrfPage>,
     state: Cell<FlashState>,
     deferred_call: DeferredCall,
+    timestamp: Cell<u32>,
 }
 
 impl Nvmc {
@@ -216,7 +219,38 @@ impl Nvmc {
             buffer: TakeCell::empty(),
             state: Cell::new(FlashState::Ready),
             deferred_call: DeferredCall::new(),
+            timestamp: Cell::new(0),
         }
+    }
+
+    fn read_timer(&self) -> u32 {
+        debug_now!()
+    }
+
+    fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
+        let t2 = self.read_timer();
+        let t1 = timestamp.get();
+
+        // debug!("Start time: {}, End Time: {} in ticks.", t1, t2);
+        timestamp.set(0);
+        // let freq = 32768;
+        let elapsed_ticks = t2.wrapping_sub(t1);
+
+        // let freq = R::frequency();
+        // debug!("Frequency value: {:?}", freq);
+        let mut elapsed = (elapsed_ticks) as f32;
+
+        let mut units = "us";
+        if elapsed > 1000000.0 {
+            elapsed = elapsed * 0.000001;
+            units = "s";
+        }
+        if elapsed > 1000.0 {
+            elapsed = elapsed * 0.001;
+            units = "ms";
+        }
+
+        (elapsed, units)
     }
 
     /// Configure the NVMC to allow writes to flash.
@@ -270,6 +304,16 @@ impl Nvmc {
         }
     }
 
+    fn is_page_blank(&self, page_number: usize) -> bool {
+        let addr = (page_number * PAGE_SIZE) as *const u32;
+        for i in 0..(PAGE_SIZE / 4) {
+            if unsafe { core::ptr::read(addr.add(i)) } != 0xFFFFFFFF {
+                return false;
+            }
+        }
+        true
+    }
+
     fn erase_page_helper(&self, page_number: usize) {
         // Put the NVMC in erase mode.
         self.registers.config.write(Configuration::WEN::Een);
@@ -283,6 +327,11 @@ impl Nvmc {
         // Make sure that the NVMC is done. The CPU should be blocked while the
         // erase is happening, but it doesn't hurt to check too.
         while !self.registers.ready.is_set(Ready::READY) {}
+        // let (elapsed, units) = self.elapsed_time(&self.timestamp);
+        // debug!(
+        //     "NVMC Erase Page Helper Elapsed Time: {}{}",
+        //     elapsed, units
+        // );
     }
 
     fn read_range(
@@ -291,6 +340,7 @@ impl Nvmc {
         buffer: &'static mut NrfPage,
     ) -> Result<(), (ErrorCode, &'static mut NrfPage)> {
         // Actually do a copy from flash into the buffer.
+        // self.timestamp.set(self.read_timer());
         let mut byte: *const u8 = (page_number * PAGE_SIZE) as *const u8;
         unsafe {
             for i in 0..buffer.len() {
@@ -298,6 +348,12 @@ impl Nvmc {
                 byte = byte.offset(1);
             }
         }
+
+        // let (elapsed, units) = self.elapsed_time(&self.timestamp);
+        // debug!(
+        //     "NVMC Read Page Elapsed Time: {}{}",
+        //     elapsed, units
+        // );
 
         // Hold on to the buffer for the callback.
         self.buffer.replace(buffer);
@@ -316,8 +372,13 @@ impl Nvmc {
         data: &'static mut NrfPage,
     ) -> Result<(), (ErrorCode, &'static mut NrfPage)> {
         // Need to erase the page first.
-        self.erase_page_helper(page_number);
+        // self.timestamp.set(self.read_timer());
+        // self.erase_page_helper(page_number);
+        if !self.is_page_blank(page_number) {
+            self.erase_page_helper(page_number);
+        }
 
+        // self.timestamp.set(self.read_timer());
         // Put the NVMC in write mode.
         self.registers.config.write(Configuration::WEN::Wen);
 
@@ -336,6 +397,11 @@ impl Nvmc {
         // Make sure that the NVMC is done. The CPU should be blocked while the
         // write is happening, but it doesn't hurt to check too.
         while !self.registers.ready.is_set(Ready::READY) {}
+        // let (elapsed, units) = self.elapsed_time(&self.timestamp);
+        // debug!(
+        //     "NVMC Register Write Elapsed Time: {}{}",
+        //     elapsed, units
+        // );
 
         // Save the buffer so we can return it with the callback.
         self.buffer.replace(data);
@@ -350,7 +416,10 @@ impl Nvmc {
 
     fn erase_page(&self, page_number: usize) -> Result<(), ErrorCode> {
         // Do the basic erase.
-        self.erase_page_helper(page_number);
+        // self.erase_page_helper(page_number);
+        if !self.is_page_blank(page_number) {
+            self.erase_page_helper(page_number);
+        }
 
         // Mark that we want to trigger a pseudo interrupt so that we can issue
         // the callback even though the NVMC is completely blocking.
