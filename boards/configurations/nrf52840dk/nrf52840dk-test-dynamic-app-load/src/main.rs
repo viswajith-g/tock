@@ -10,7 +10,6 @@
 
 use kernel::component::Component;
 use kernel::hil::led::LedLow;
-use kernel::hil::time::Counter;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::process::ProcessArray;
 use kernel::process::ProcessLoadingAsync;
@@ -19,6 +18,8 @@ use kernel::{capabilities, create_capability, static_init};
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
 use nrf52_components::{UartChannel, UartPins};
+use kernel::hil::time::Counter;
+use nrf52840::timer::TimerAlarm;
 
 // The nRF52840DK LEDs (see back of board)
 const LED1_PIN: Pin = Pin::P0_13;
@@ -68,13 +69,18 @@ static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
 type AlarmDriver = components::alarm::AlarmDriverComponentType<nrf52840::rtc::Rtc<'static>>;
 
 type NonVolatilePages = components::dynamic_binary_storage::NVPages<nrf52840::nvmc::Nvmc>;
+
 type DynamicBinaryStorage<'a> = kernel::dynamic_binary_storage::SequentialDynamicBinaryStorage<
     'static,
     'static,
     nrf52840::chip::NRF52<'a, Nrf52840DefaultPeripherals<'a>>,
     kernel::process::ProcessStandardDebugFull,
     NonVolatilePages,
-    nrf52840::rtc::Rtc<'static>,
+>;
+
+type AppLoaderDriver = capsules_extra::app_loader::AppLoader<
+    DynamicBinaryStorage<'static>,
+    DynamicBinaryStorage<'static>,
 >;
 
 /// Supported drivers by the platform
@@ -91,11 +97,7 @@ pub struct Platform {
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
     processes: &'static ProcessArray<NUM_PROCS>,
-    dynamic_app_loader: &'static capsules_extra::app_loader::AppLoader<
-        DynamicBinaryStorage<'static>,
-        DynamicBinaryStorage<'static>,
-        nrf52840::rtc::Rtc<'static>,
-    >,
+    dynamic_app_loader: &'static AppLoaderDriver,
 }
 
 impl SyscallDriverLookup for Platform {
@@ -265,6 +267,16 @@ pub unsafe fn main() {
         mux_alarm,
     )
     .finalize(components::alarm_component_static!(nrf52840::rtc::Rtc));
+
+    //--------------------------------------------------------------------------
+    // Timer 1 instantiation
+    //--------------------------------------------------------------------------
+    let timer0 = static_init!(TimerAlarm<'static>, TimerAlarm::new(0));
+    timer0.start();
+
+    unsafe {
+        kernel::debug::assign_debug_timer(timer0);
+    }
 
     //--------------------------------------------------------------------------
     // UART & CONSOLE & DEBUG
@@ -441,17 +453,15 @@ pub unsafe fn main() {
         storage_permissions_policy,
         app_flash,
         app_memory,
-        rtc,
     )
     .finalize(components::process_loader_sequential_component_static!(
         nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
         kernel::process::ProcessStandardDebugFull,
         NUM_PROCS,
-        nrf52840::rtc::Rtc<'static>,
     ));
 
     //--------------------------------------------------------------------------
-    // Dynamic App Loading
+    // DYNAMIC PROCESS LOADING
     //--------------------------------------------------------------------------
 
     // Create the dynamic binary flasher.
@@ -464,7 +474,6 @@ pub unsafe fn main() {
             nrf52840::nvmc::Nvmc,
             nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
             kernel::process::ProcessStandardDebugFull,
-            nrf52840::rtc::Rtc<'static>,
         ));
 
     // Create the dynamic app loader capsule.
@@ -473,12 +482,10 @@ pub unsafe fn main() {
         capsules_extra::app_loader::DRIVER_NUM,
         dynamic_binary_storage,
         dynamic_binary_storage,
-        rtc,
     )
     .finalize(components::app_loader_component_static!(
         DynamicBinaryStorage<'static>,
         DynamicBinaryStorage<'static>,
-        nrf52840::rtc::Rtc<'static>,
     ));
 
     //--------------------------------------------------------------------------
