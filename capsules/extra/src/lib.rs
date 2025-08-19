@@ -51,7 +51,7 @@ pub mod hmac_sha256;
 pub mod hs3003;
 pub mod hts221;
 pub mod humidity;
-pub mod i2c_device_scanner;
+pub mod i2c_discovery;
 pub mod ieee802154;
 pub mod isl29035;
 pub mod isolated_nonvolatile_storage_driver;

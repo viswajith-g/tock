@@ -8,9 +8,8 @@
 #![no_main]
 #![deny(missing_docs)]
 
-use capsules_extra::i2c_device_scanner::I2CDeviceScanClient;
-use components::i2c_device_scanner::I2CDeviceScannerComponent;
 use kernel::component::Component;
+use kernel::hil::gpio::Interrupt;
 use kernel::hil::led::LedLow;
 use kernel::hil::time::Counter;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
@@ -78,6 +77,21 @@ type DynamicBinaryStorage<'a> = kernel::dynamic_binary_storage::SequentialDynami
     NonVolatilePages,
 >;
 
+#[cfg(feature = "screen_ssd1306")]
+type Screen = components::ssd1306::Ssd1306ComponentType<nrf52840::i2c::TWI<'static>>;
+#[cfg(feature = "screen_sh1106")]
+type Screen = components::sh1106::Sh1106ComponentType<nrf52840::i2c::TWI<'static>>;
+type ScreenDriver = components::screen::ScreenSharedComponentType<Screen>;
+
+fn create_short_id_from_name(name: &str, metadata: u8) -> kernel::process::ShortId {
+    let sum = kernel::utilities::helpers::crc32_posix(name.as_bytes());
+
+    // Combine the metadata and CRC into the short id.
+    let sid = ((metadata as u32) << 28) | (sum & 0xFFFFFFF);
+
+    core::num::NonZeroU32::new(sid).into()
+}
+
 /// Supported drivers by the platform
 pub struct Platform {
     console: &'static capsules_core::console::Console<'static>,
@@ -88,6 +102,7 @@ pub struct Platform {
         kernel::hil::led::LedLow<'static, nrf52840::gpio::GPIOPin<'static>>,
         4,
     >,
+    screen: &'static ScreenDriver,
     alarm: &'static AlarmDriver,
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
@@ -105,6 +120,7 @@ impl SyscallDriverLookup for Platform {
     {
         match driver_num {
             capsules_core::console::DRIVER_NUM => f(Some(self.console)),
+            capsules_extra::screen::DRIVER_NUM => f(Some(self.screen)),
             capsules_core::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules_core::led::DRIVER_NUM => f(Some(self.led)),
             capsules_core::button::DRIVER_NUM => f(Some(self.button)),
@@ -320,36 +336,93 @@ pub unsafe fn main() {
     // I2C Device Scanner
     //--------------------------------------------------------------------------
 
-    struct KernelI2cScanLogger;
+    // GPIO pins for I2C interface
+    const SCREEN_I2C_SDA_PIN: Pin = Pin::P1_10;
+    const SCREEN_I2C_SCL_PIN: Pin = Pin::P1_11;
 
-    impl I2CDeviceScanClient for KernelI2cScanLogger {
-        fn device_found(&self, address: u8) {
-            kernel::debug!("[i2c-scan] device found at 0x{:02X}", address);
-        }
-
-        fn scan_complete(&self) {
-            kernel::debug!("[i2c-scan] scan complete");
-        }
-    }
-
-    static KERNEL_SCAN_LOGGER: KernelI2cScanLogger = KernelI2cScanLogger;
-
+    // Initialize I2C hardware
     let i2c_bus = components::i2c::I2CMuxComponent::new(&nrf52840_peripherals.nrf52.twi1, None)
         .finalize(components::i2c_mux_component_static!(nrf52840::i2c::TWI));
+
+    nrf52840_peripherals.nrf52.twi1.configure(
+        nrf52840::pinmux::Pinmux::new(SCREEN_I2C_SCL_PIN as u32),
+        nrf52840::pinmux::Pinmux::new(SCREEN_I2C_SDA_PIN as u32),
+    );
+
     nrf52840_peripherals
         .nrf52
         .twi1
         .set_speed(nrf52840::i2c::Speed::K400);
 
-    let irq_pin = &nrf52840_peripherals.gpio_port[BUTTON1_PIN]; // or any GPIO you'd like to use
+    // I2C address is b011110X, and on this board D/C̅ is GND.
+    let ssd1306_sh1106_i2c = components::i2c::I2CComponent::new(i2c_bus, 0x3c)
+        .finalize(components::i2c_component_static!(nrf52840::i2c::TWI));
 
-    let i2c_scanner = I2CDeviceScannerComponent::new(i2c_bus, irq_pin, 0x00, &KERNEL_SCAN_LOGGER)
-        .finalize(components::i2c_device_scanner_component_static!(
-            nrf52840::i2c::TWI,
-            nrf52840::gpio::GPIOPin
-        ));
+    // Create the ssd1306 object for the actual screen driver.
+    #[cfg(feature = "screen_ssd1306")]
+    let ssd1306_sh1106 = components::ssd1306::Ssd1306Component::new(ssd1306_sh1106_i2c, true)
+        .finalize(components::ssd1306_component_static!(nrf52840::i2c::TWI));
 
-    i2c_scanner.start();
+    #[cfg(feature = "screen_sh1106")]
+    let ssd1306_sh1106 = components::sh1106::Sh1106Component::new(ssd1306_sh1106_i2c, true)
+        .finalize(components::sh1106_component_static!(nrf52840::i2c::TWI));
+
+    let apps_regions = kernel::static_init!(
+        [capsules_extra::screen_shared::AppScreenRegion; 3],
+        [
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                create_short_id_from_name("process_manager", 0x0),
+                0,      // x
+                0,      // y
+                16 * 8, // width
+                7 * 8   // height
+            ),
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                create_short_id_from_name("counter", 0x0),
+                0,     // x
+                7 * 8, // y
+                8 * 8, // width
+                1 * 8  // height
+            ),
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                create_short_id_from_name("temperature", 0x0),
+                8 * 8, // x
+                7 * 8, // y
+                8 * 8, // width
+                1 * 8  // height
+            )
+        ]
+    );
+
+    let screen = components::screen::ScreenSharedComponent::new(
+        board_kernel,
+        capsules_extra::screen::DRIVER_NUM,
+        ssd1306_sh1106,
+        apps_regions,
+    )
+    .finalize(components::screen_shared_component_static!(1032, Screen));
+
+    ssd1306_sh1106.init_screen();
+
+    let i2c_scan_timeout_alarm = static_init!(
+        capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm::new(mux_alarm)
+    );
+    i2c_scan_timeout_alarm.setup();
+
+    let irq_pin = &nrf52840_peripherals.gpio_port[BUTTON1_PIN];
+
+    let i2c_discovery = components::i2c_discovery::I2CDiscoveryComponent::new(
+        &nrf52840_peripherals.nrf52.twi1,
+        i2c_scan_timeout_alarm,
+        irq_pin,
+    )
+    .finalize(components::hardware_i2c_scanner_component_static!(
+        nrf52840::i2c::TWI,
+        nrf52840::rtc::Rtc
+    ));
+
+    irq_pin.set_client(i2c_discovery);
 
     //--------------------------------------------------------------------------
     // BUTTONS
@@ -525,6 +598,7 @@ pub unsafe fn main() {
             button,
             adc,
             led,
+            screen,
             alarm,
             scheduler,
             systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
