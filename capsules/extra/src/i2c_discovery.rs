@@ -158,7 +158,7 @@ impl<'a, I: I2CMaster<'a> + 'a, A: Alarm<'a> + 'a> I2CDeviceDiscovery<'a, I, A> 
     fn handle_timeout(&self) {
         if self.operation_pending.get().unwrap_or(false) {
             if let Some(addr) = self.current_address.get() {
-                debug!("  [TIMEOUT] No response from 0x{:02X}", addr);
+                debug!("  [Timeout] No response from 0x{:02X}", addr);
 
                 // Handle buffer recovery
                 if self.scan_buffer.is_none() {
@@ -181,7 +181,7 @@ impl<'a, I: I2CMaster<'a> + 'a, A: Alarm<'a> + 'a> I2CDeviceDiscovery<'a, I, A> 
             if count < devices.len() {
                 devices[count] = address;
                 self.device_count.set(count + 1);
-                debug!("  FOUND DEVICE at address 0x{:02X}!", address);
+                debug!("  [Found Device] at address 0x{:02X}!", address);
             }
             self.attached_device_addresses.replace(devices);
         }
@@ -242,18 +242,18 @@ impl<'a, I: I2CMaster<'a> + 'a, A: Alarm<'a> + 'a> I2CHwMasterClient
         if let Some(addr) = self.current_address.get() {
             match status {
                 Ok(()) => {
-                    debug!("  SUCCESS: Device responded at 0x{:02X}", addr);
+                    debug!("  [Success] Device responded at 0x{:02X}", addr);
                     self.record_found_device(addr);
                 }
                 Err(I2CError::AddressNak) => {
-                    debug!("  No device at 0x{:02X}", addr);
+                    debug!("  [Addr Nak] No device at 0x{:02X}", addr);
                 }
                 Err(I2CError::DataNak) => {
-                    debug!("  Device at 0x{:02X} (Data NAK)", addr);
+                    debug!("  [Data Nak] Device at 0x{:02X}", addr);
                     self.record_found_device(addr);
                 }
                 Err(other_error) => {
-                    debug!("  Error at 0x{:02X}: {:?}", addr, other_error);
+                    debug!("  [Error] at 0x{:02X}: {:?}", addr, other_error);
                 }
             }
 
