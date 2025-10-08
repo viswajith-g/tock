@@ -104,6 +104,7 @@ pub mod temperature_stm;
 pub mod test;
 pub mod text_screen;
 pub mod thread_network;
+pub mod thread_network_manager;
 pub mod tickv;
 pub mod touch;
 pub mod udp_driver;

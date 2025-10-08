@@ -46,6 +46,8 @@ pub enum NUM {
     Thread                = 0x30005,
     Eui64                 = 0x30006,
     EthernetTap           = 0x30007,
+    ThreadNetworkManager  = 0x31001,
+    LoRaNetworkManager    = 0x31002,
 
     // Cryptography
     Rng                   = 0x40001,

@@ -4,3 +4,4 @@
 
 pub mod screen;
 pub mod virtual_kv;
+pub mod network;

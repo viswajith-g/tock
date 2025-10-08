@@ -109,6 +109,7 @@ pub mod temperature;
 pub mod temperature_rp2040;
 pub mod temperature_stm;
 pub mod text_screen;
+pub mod thread_network_manager;
 pub mod tickv;
 pub mod tickv_kv_store;
 pub mod touch;
