@@ -5,6 +5,8 @@ use kernel::ErrorCode;
 use kernel::debug;
 
 const APP_ID_SIZE: usize = 4;
+const DEV_ID_SIZE: usize = 4;
+const DELTA_HEADER_SIZE: usize = APP_ID_SIZE + DEV_ID_SIZE;
 
 /// Virtual Thread interface - Network virtualization for 802.15.4
 pub struct VirtualThreadInterface<'a, R: RadioData<'a> + RadioConfig<'a>> {
@@ -15,6 +17,7 @@ pub struct VirtualThreadInterface<'a, R: RadioData<'a> + RadioConfig<'a>> {
     tx_buffer: TakeCell<'static, [u8]>,
     #[allow(dead_code)]
     rx_buffer: TakeCell<'static, [u8]>,
+    device_id: u32,
 }
 
 impl<'a, R: RadioData<'a> + RadioConfig<'a>> VirtualThreadInterface<'a, R> {
@@ -22,6 +25,7 @@ impl<'a, R: RadioData<'a> + RadioConfig<'a>> VirtualThreadInterface<'a, R> {
         radio: &'a R,
         tx_buffer: &'static mut [u8],
         rx_buffer: &'static mut [u8],
+        device_id: u32,
     ) -> Self {
         Self {
             radio,
@@ -30,41 +34,57 @@ impl<'a, R: RadioData<'a> + RadioConfig<'a>> VirtualThreadInterface<'a, R> {
             current_tenant: OptionalCell::empty(),
             tx_buffer: TakeCell::new(tx_buffer),
             rx_buffer: TakeCell::new(rx_buffer),
+            device_id,
         }
     }
 
-    /// Tag packet with tenant ID (prepend 2 bytes)
+    /// Tag packet with device ID and app ID 
         fn tag_packet(&self, app_id: TenantId, payload: &[u8], output: &mut [u8]) -> usize {
-        // Write 4-byte tenant ID in big-endian
-        let tenant_bytes = app_id.to_be_bytes();
-        output[0] = tenant_bytes[0];
-        output[1] = tenant_bytes[1];
-        output[2] = tenant_bytes[2];
-        output[3] = tenant_bytes[3];
+            
+        // device id (big-endian)
+        let device_bytes = self.device_id.to_be_bytes();
+        output[0] = device_bytes[0];
+        output[1] = device_bytes[1];
+        output[2] = device_bytes[2];
+        output[3] = device_bytes[3];
         
-        let payload_len = core::cmp::min(payload.len(), output.len() - APP_ID_SIZE);
-        output[APP_ID_SIZE..APP_ID_SIZE + payload_len]
+        // app ID (big-endian)
+        let tenant_bytes = app_id.to_be_bytes();
+        output[4] = tenant_bytes[0];
+        output[5] = tenant_bytes[1];
+        output[6] = tenant_bytes[2];
+        output[7] = tenant_bytes[3];
+        
+        let payload_len = core::cmp::min(payload.len(), output.len() - DELTA_HEADER_SIZE);
+        output[DELTA_HEADER_SIZE..DELTA_HEADER_SIZE + payload_len]
             .copy_from_slice(&payload[..payload_len]);
         
-        APP_ID_SIZE + payload_len
+        DELTA_HEADER_SIZE + payload_len
     }
 
-    /// Extract tenant ID from packet (4 bytes)
-    fn extract_tenant_id(&self, packet: &[u8]) -> Option<(TenantId, usize)> {
+    /// Extract header from packet (device_id and app_id)
+    fn extract_header(&self, packet: &[u8]) -> Option<(u32, TenantId, usize)> {
         if packet.len() < APP_ID_SIZE {
             return None;
         }
         
-        // Read 4-byte tenant ID in big-endian
-        let app_id = u32::from_be_bytes([
+        // Read device ID (big-endian)
+        let device_id = u32::from_be_bytes([
             packet[0],
             packet[1],
             packet[2],
             packet[3],
         ]);
         
-        // Return app_id and offset to payload start
-        Some((app_id, APP_ID_SIZE))
+        // Read app ID (big-endian)
+        let app_id = u32::from_be_bytes([
+            packet[4],
+            packet[5],
+            packet[6],
+            packet[7],
+        ]);
+        
+        Some((device_id, app_id, DELTA_HEADER_SIZE))
     }
 }
 
@@ -105,7 +125,7 @@ impl<'a, R: RadioData<'a> + RadioConfig<'a>> kernel::hil::radio::TxClient for Vi
     fn send_done(&self, buffer: &'static mut [u8], _acked: bool, result: Result<(), ErrorCode>) {
         self.tx_buffer.replace(buffer);
         
-        // Notify the TX client (NetworkManager) which tenant completed
+        // Notify the TX client (NetworkManager) which app completed
         self.current_tenant.take().map(|app_id| {
             self.tx_client.map(|client| {
                 client.send_done(app_id, result);
@@ -128,8 +148,9 @@ impl<'a, R: RadioData<'a> + RadioConfig<'a>> kernel::hil::radio::RxClient for Vi
             return;
         }
 
-        // Extract tenant ID from packet
-        if let Some((app_id, payload_offset)) = self.extract_tenant_id(&buffer[..len]) {
+        if let Some((device_id, app_id, payload_offset)) = self.extract_header(&buffer[..len]) {
+            kernel::debug!("  Received message from: device=0x{:08x}, app=0x{:08x}", device_id, app_id);
+        
             
             // Get payload slice
             let payload = &buffer[payload_offset..len];
@@ -140,7 +161,7 @@ impl<'a, R: RadioData<'a> + RadioConfig<'a>> kernel::hil::radio::RxClient for Vi
                 client.receive(app_id, payload, payload_len);
             });
         } else {
-            kernel::debug!("Failed to rsolve app_id (packet too short)");
+            kernel::debug!("Failed to resolve header (packet too short)");
         }
 
         // Return buffer to radio

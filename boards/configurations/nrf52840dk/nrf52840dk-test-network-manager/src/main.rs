@@ -8,6 +8,8 @@
 #![no_main]
 #![deny(missing_docs)]
 
+use core::ptr::addr_of;
+
 use kernel::component::Component;
 use kernel::hil::led::LedLow;
 use kernel::hil::time::Counter;
@@ -242,21 +244,6 @@ pub unsafe fn main() {
     let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
 
     //--------------------------------------------------------------------------
-    // NETWORK VIRTUALIZATION
-    //--------------------------------------------------------------------------
-
-    let thread_network_manager = components::thread_network_manager::ThreadNetworkManagerComponent::new(
-        board_kernel,
-        capsules_extra::thread_network_manager::DRIVER_NUM,
-        &nrf52840_peripherals.ieee802154_radio,
-    )
-    .finalize(components::thread_network_manager_component_static!(
-        nrf52840::ieee802154_radio::Radio
-    ));
-
-    let _ = nrf52840_peripherals.ieee802154_radio.start();
-
-    //--------------------------------------------------------------------------
     // LEDs
     //--------------------------------------------------------------------------
 
@@ -398,6 +385,32 @@ pub unsafe fn main() {
     //--------------------------------------------------------------------------
 
     nrf52_components::NrfClockComponent::new(&base_peripherals.clock).finalize(());
+
+    //--------------------------------------------------------------------------
+    // NETWORK VIRTUALIZATION
+    //--------------------------------------------------------------------------
+
+    let device_id_base = (*addr_of!(nrf52840::ficr::FICR_INSTANCE)).id();
+
+    // use only the lower 32 bits
+    let device_id = (device_id_base[0] as u32) 
+                  | ((device_id_base[1] as u32) << 8)
+                  | ((device_id_base[2] as u32) << 16)
+                  | ((device_id_base[3] as u32) << 24);
+    
+    kernel::debug!("Device Hardware ID: 0x{:08x}", device_id);
+
+    let thread_network_manager = components::thread_network_manager::ThreadNetworkManagerComponent::new(
+        board_kernel,
+        capsules_extra::thread_network_manager::DRIVER_NUM,
+        &nrf52840_peripherals.ieee802154_radio,
+        device_id,
+    )
+    .finalize(components::thread_network_manager_component_static!(
+        nrf52840::ieee802154_radio::Radio
+    ));
+
+    let _ = nrf52840_peripherals.ieee802154_radio.start();
 
     //--------------------------------------------------------------------------
     // Credential Checking

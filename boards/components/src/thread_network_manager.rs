@@ -51,6 +51,7 @@ pub struct ThreadNetworkManagerComponent<R: RadioData<'static> + RadioConfig<'st
     board_kernel: &'static kernel::Kernel,
     driver_num: usize,
     radio: &'static R,
+    device_id: u32,
 }
 
 impl<R: RadioData<'static> + RadioConfig<'static> + 'static> ThreadNetworkManagerComponent<R> {
@@ -58,11 +59,13 @@ impl<R: RadioData<'static> + RadioConfig<'static> + 'static> ThreadNetworkManage
         board_kernel: &'static kernel::Kernel,
         driver_num: usize,
         radio: &'static R,
+        device_id: u32,
     ) -> Self {
         Self {
             board_kernel,
             driver_num,
             radio,
+            device_id,
         }
     }
 }
@@ -90,6 +93,7 @@ impl<R: RadioData<'static> + RadioConfig<'static> + 'static> Component for Threa
             self.radio,
             thread_tx_buf,
             thread_rx_buf,
+            self.device_id,
         ));
 
         // Set up radio callbacks
