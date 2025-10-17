@@ -4,10 +4,28 @@
 
 # Shared makefile for building the tock kernel for nRF test boards.
 
+# Path to signing tool
+SIGN_KERNEL_DIR = $(TOCK_ROOT_DIRECTORY)tools/build/sign-kernel
+SIGN_KERNEL = $(SIGN_KERNEL_DIR)/../../target/release/sign-kernel
+
+# Build signing tool if it doesn't exist
+$(SIGN_KERNEL):
+	@echo "Building signing tool..."
+	cd $(SIGN_KERNEL_DIR) && cargo build --release
+
+# Override the binary creation to include signing step
+# First build the ELF, then sign it, then create the bin
+$(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $(SIGN_KERNEL)
+	@echo "Signing kernel ELF..."
+	$(SIGN_KERNEL) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)
+	@echo "Creating binary from signed ELF..."
+	$(OBJCOPY) --output-target=binary --strip-sections --strip-all --remove-section .apps $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $@
+	@$(SIZE) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)
+	@sha256sum $@
 TOCKLOADER=tockloader
 
 # Where in the SAM4L flash to load the kernel with `tockloader`
-KERNEL_ADDRESS=0x00000
+KERNEL_ADDRESS=0x08000
 
 # Upload programs over uart with tockloader
 ifdef PORT

@@ -380,6 +380,12 @@ SECTIONS
      */
     .attributes : AT (ORIGIN(rom) + LENGTH(rom) - SIZEOF(.attributes))
     {
+
+        /* TLV: Kernel Signature
+         * This field specifies the signature of the kernel image. 
+         */
+        KEEP(*(.tock.attr.kernel_signature))
+
         /* TLV: Kernel Version
          * This specifies the version of the kernel.
          *
