@@ -20,7 +20,7 @@ pub struct KernelRegion {
     pub attributes_start: usize,
 }
 
-/// ECDSA P-256 signature attribute (TLV type 0x0104)
+/// ECDSA P-256 signature attribute (TLV type 0x0105)
 #[derive(Copy, Clone, Debug)]
 pub struct SignatureAttribute {
     /// ECDSA signature r component (32 bytes)
@@ -46,8 +46,11 @@ pub struct KernelVersion {
 
 /// Parsed kernel attributes from the attributes section
 pub struct KernelAttributes {
-    /// Kernel signature (type 0x0104)
+    /// Kernel signature (type 0x0105)
     pub signature: Option<SignatureAttribute>,
+
+    /// Kernel relocation symols (type 0x0104)
+    pub relocation: Option<RelocationInfo>,
     
     /// Kernel version (type 0x0103)
     pub kernel_version: Option<KernelVersion>,
@@ -57,4 +60,26 @@ pub struct KernelAttributes {
     
     /// Kernel flash region: (start_address, length) (type 0x0102)
     pub kernel_flash: Option<(u32, u32)>,
+}
+
+/// Relocation information from TLV
+#[derive(Debug, Clone, Copy)]
+pub struct RelocationInfo {
+    pub link_address: u32,       // Address kernel was linked for
+    pub num_entries: u32,        // Number of relocation entries
+    pub entries_start: usize,    // Flash address of first entry
+}
+
+/// Single relocation entry (matches kernel structure)
+#[derive(Debug, Clone, Copy)]
+pub struct RelocationEntry {
+    pub offset: u32,           // Offset from kernel start
+    pub original_value: u32,   // Value before relocation
+    pub rel_type: u8,          // Relocation type (R_ARM_ABS32 = 2)
+    pub reserved: [u8; 3],     // Padding
+}
+
+impl RelocationEntry {
+    /// Size of one entry in bytes
+    pub const SIZE: usize = 12;
 }

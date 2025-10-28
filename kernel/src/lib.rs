@@ -145,9 +145,45 @@ static TOCK_ATTRIBUTES_KERNEL_SIGNATURE: TockAttributesKernelSignature =
         signature_r: [0u8; 32],
         signature_s: [0u8; 32],
         algorithm_id: 0x00000001,
-        tlv_type: 0x0104,
+        tlv_type: 0x0105,
         tlv_len: 68,
     };
+
+/// Relocation TLV entry structure.
+///
+/// Each entry describes one location that needs runtime relocation.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct RelocationEntry {
+    offset: u32,
+    original_value: u32,
+    rel_type: u8,
+    reserved: [u8; 3],
+}
+
+#[repr(C)]
+struct TockAttributesKernelRelocationsValue {
+    link_address: u32,
+    num_entries: u32,
+    entries: [RelocationEntry; 1000], // capacity; tool will set num_entries
+}
+
+// Only the VALUE goes into this section; header is emitted by the linker.
+#[link_section = ".tock.attr.kernel_relocation"]
+#[used]
+#[no_mangle ]
+static TOCK_ATTRIBUTES_KERNEL_RELOCATIONS_VALUE: TockAttributesKernelRelocationsValue =
+    TockAttributesKernelRelocationsValue {
+        link_address: 0xFFFF_FFFF,
+        num_entries: 0,
+        entries: [RelocationEntry {
+            offset: 0,
+            original_value: 0,
+            rel_type: 0,
+            reserved: [0; 3],
+        }; 1000],
+    };
+
 
 /// Tock kernel attributes structure for version information.
 #[repr(C)]

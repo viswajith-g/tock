@@ -16,4 +16,3 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 goblin = "0.8"  # For ELF parsing
 hex = "0.4"
-

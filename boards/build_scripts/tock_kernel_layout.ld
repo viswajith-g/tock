@@ -286,42 +286,7 @@ SECTIONS
         KEEP(*(.stack_buffer))
         . = ALIGN(8);
         _estack = .;
-    } > ram AT> ram
-
-    /* Section for application binaries in flash.
-     *
-     * This section is put into the "prog" memory, which is reserved for
-     * applications. This section is not used for the kernel, but including it
-     * in the .elf file allows for concatenating application binaries with the
-     * kernel. By default the loader will not include this section in the
-     * flashed binary. For boards that wish to use this section, it can be set
-     * to load with `objcopy` similar to:
-     *
-     *     arm-none-eabi-objcopy --set-section-flags .apps=LOAD,ALLOC <elf>
-     */
-    .apps (NOLOAD) :
-    {
-        /* _sapps symbol used by Tock to look for first application. */
-        . = ALIGN(4);
-        _sapps = .;
-
-        /* Include placeholder bytes in this section so that the linker
-         * includes a segment for it. Otherwise the section will be empty and
-         * the linker will ignore it when defining the segments.
-         * If less then 4 bytes, some linkers set this section to size 0
-         * and openocd fails to write it.
-         *
-         * An issue has been submitted https://github.com/raspberrypi/openocd/issues/25
-         */
-        BYTE(0xFF)
-        BYTE(0xFF)
-        BYTE(0xFF)
-        BYTE(0xFF)
-    } > prog
-    /* _eapps symbol used by tock to calculate the length of app flash */
-    _eapps = _sapps + LENGTH(prog);
-
-
+    } > ram AT> ram 
 
     .sram (NOLOAD) :
     {
@@ -361,7 +326,8 @@ SECTIONS
         _sappmem = .;
         *(.app_memory)
     } > ram
-    _eappmem = ORIGIN(ram) + LENGTH(ram);
+    /* _eappmem = ORIGIN(ram) + LENGTH(ram); */
+    _eappmem = ORIGIN(ram) + LENGTH(ram) - 0x100;
 
 
     /* Place attributes at the end of the kernel ROM region. These will be used
@@ -378,8 +344,21 @@ SECTIONS
      * The TLV `Length` specifies the size of the TLV value (i.e. not including
      * the TLV header).
      */
-    .attributes : AT (ORIGIN(rom) + LENGTH(rom) - SIZEOF(.attributes))
+    /* .attributes : AT (ORIGIN(rom) + LENGTH(rom) - SIZEOF(.attributes)) */
+    .attributes (LOADADDR(.relocate) + SIZEOF(.relocate)): AT (LOADADDR(.relocate) + SIZEOF(.relocate))
     {
+
+        /* TLV: Kernel Relocations */
+        /* Relocation TLV (VALUE) */
+        _tock_attr_reloc_start = .;
+        KEEP(*(.tock.attr.kernel_relocation))   /* value only: link_addr, num, entries[...] */
+        _tock_attr_reloc_value_end = .;
+
+        /* Relocation TLV (HEADER placeholder to be patched by the tool) */
+        _tock_attr_reloc_header = .;
+        SHORT(0x0104)   /* tlv_type: Kernel Relocations */
+        SHORT(_tock_attr_reloc_value_end - _tock_attr_reloc_start)  /* Full reserved size! */
+        _tock_attr_reloc_end = .;
 
         /* TLV: Kernel Signature
          * This field specifies the signature of the kernel image. 
@@ -436,6 +415,12 @@ SECTIONS
         *(.eh_frame*);
     }
 }
+/* Check to ensure the relocation values don't overflow the TLV */
+ASSERT(_tock_attr_reloc_header - _tock_attr_reloc_start >= 8, "Reloc TLV too small");
+
+/* Stub symbols for apps (apps section removed, BDT manages placement) */
+_sapps = LOADADDR(.attributes) + SIZEOF(.attributes);
+_eapps = _sapps;
 
 /* LOADADDR: Return the absolute load address of the named section. This is
  * normally the same as ADDR, but it may be different if the AT keyword is used
@@ -468,7 +453,7 @@ ENTRY(_stext);
  * or similar and verify they're equal, but that would be yet-one-more-tool.
  * Maybe something we can do in CI at some point, and remove this assert.
  */
-ASSERT((_eattributes == _erom) || (_eattributes == _erom + SIZEOF(.attributes)), "Kernel attributes are not at the end of ROM.")
+/* ASSERT((_eattributes == _erom) || (_eattributes == _erom + SIZEOF(.attributes)), "Kernel attributes are not at the end of ROM.") */
 
 /* This assert works out because even though some of the relative positions are
  * off, the sizes are sane in each pass.

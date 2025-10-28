@@ -10,12 +10,16 @@ use secure_boot_common::{BoardConfig, types::KernelVersion};
 pub struct Nrf52840Config;
 
 impl BoardConfig for Nrf52840Config {
-    /// Application flash starts at 256KB offset (after bootloader + kernel)
-    /// This should match _sapps in the kernel's linker script
-    const APP_START: usize = 0x0004_0000; // 256KB
+    // /// Application flash starts at 256KB offset (after bootloader + kernel)
+    // /// This should match _sapps in the kernel's linker script
+    // const APP_START: usize = 0x0004_0000; // 256KB
     
-    /// Bootloader occupies first 32KB
-    const KERNEL_START: usize = 0x0000_8000; // 32KB
+    // /// Bootloader occupies first 32KB
+    // const KERNEL_START: usize = 0x0000_8000; // 32KB
+
+    const AVAILABLE_FLASH_START: usize = 0x9000; // After Discovery Table
+
+    const AVAILABLE_FLASH_END: usize = 0x10_0000; // End of flash
     
     /// ECDSA P-256 public key (uncompressed format: 64 bytes)
     const PUBLIC_KEY: [u8; 64] = [

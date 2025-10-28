@@ -8,24 +8,40 @@
 SIGN_KERNEL_DIR = $(TOCK_ROOT_DIRECTORY)tools/build/sign-kernel
 SIGN_KERNEL = $(SIGN_KERNEL_DIR)/../../target/release/sign-kernel
 
+# Path to relocation tool
+KERNEL_RELOC_DIR = $(TOCK_ROOT_DIRECTORY)tools/build/kernel-reloc
+KERNEL_RELOC = $(KERNEL_RELOC_DIR)/../../target/release/kernel-reloc
+
 # Build signing tool if it doesn't exist
 $(SIGN_KERNEL):
-	@echo "Building signing tool..."
+	@echo "Building kernel signing tool"
 	cd $(SIGN_KERNEL_DIR) && cargo build --release
 
-# Override the binary creation to include signing step
-# First build the ELF, then sign it, then create the bin
-$(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $(SIGN_KERNEL)
-	@echo "Signing kernel ELF..."
+# Build relocation tool if needed
+$(KERNEL_RELOC):
+	@echo "Building kernel relocation emebd tool"
+	cd $(KERNEL_RELOC_DIR) && cargo build --release
+
+# Override the binary creation to include signing and relocation embedding
+# Flow: Build ELF → Sign → Embed Relocations → Create Binary
+$(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin: \
+    $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) \
+    $(SIGN_KERNEL) \
+    $(KERNEL_RELOC)
+	@echo "Adding Kernel Relocation Parameters"
+	$(KERNEL_RELOC) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)
+	@echo "Signing Kernel"
 	$(SIGN_KERNEL) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)
-	@echo "Creating binary from signed ELF..."
-	$(OBJCOPY) --output-target=binary --strip-sections --strip-all --remove-section .apps $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $@
+	@echo "Creating binary"
+	$(OBJCOPY) --output-target=binary --strip-all --remove-section .apps $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $@
 	@$(SIZE) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)
 	@sha256sum $@
+
+
 TOCKLOADER=tockloader
 
 # Where in the SAM4L flash to load the kernel with `tockloader`
-KERNEL_ADDRESS=0x08000
+KERNEL_ADDRESS=0x09000
 
 # Upload programs over uart with tockloader
 ifdef PORT
@@ -45,3 +61,55 @@ flash: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
 .PHONY: flash-openocd
 flash-openocd: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
 	$(TOCKLOADER) $(TOCKLOADER_GENERAL_FLAGS) flash --address $(KERNEL_ADDRESS) --board nrf52dk --openocd $<
+
+
+# J-Link config
+JLINK_EXE    ?= JLinkExe
+JLINK_DEVICE ?= nRF52840_xxAA
+JLINK_IF     ?= SWD
+JLINK_SPEED  ?= 4000
+
+# Flash the kernel via J-Link (no tockloader)
+# .PHONY: flash-jlink
+# flash-jlink: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
+# 	@echo "Flashing $(PLATFORM) (ELF) via J-Link..."
+# 	@set -e; \
+# 	SCRIPT="$$(mktemp /tmp/jlink_XXXXXX.jlink)"; \
+# 	{ \
+# 	  echo "SetBatchMode 1"; \
+# 	  echo "connect"; \
+# 	  echo "r"; \
+# 	  echo "loadbin $< $(KERNEL_ADDRESS)"; \
+# 	  echo "SetResetType 0"; \
+# 	  echo "reset"; \
+# 	  echo "q"; \
+# 	} > $$SCRIPT; \
+# 	$(JLINK_EXE) -device $(JLINK_DEVICE) -if $(JLINK_IF) -speed $(JLINK_SPEED) -NoGui 1 -CommandFile $$SCRIPT; \
+# 	rm -f $$SCRIPT
+
+.PHONY: flash-jlink
+flash-jlink: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
+	@echo "Flashing $(PLATFORM) to $(KERNEL_ADDRESS)..."
+	@SCRIPT=$$(mktemp /tmp/jlink_XXXXXX.jlink); \
+	echo "r" > $$SCRIPT; \
+	echo "loadbin $< $(KERNEL_ADDRESS)" >> $$SCRIPT; \
+	echo "verifybin $< $(KERNEL_ADDRESS)" >> $$SCRIPT; \
+	echo "r" >> $$SCRIPT; \
+	echo "qc" >> $$SCRIPT; \
+	cat $$SCRIPT; \
+	$(JLINK_EXE) -device $(JLINK_DEVICE) -if $(JLINK_IF) -speed $(JLINK_SPEED) -autoconnect 1 -CommandFile $$SCRIPT || true; \
+	rm -f $$SCRIPT
+
+# .PHONY: flash-jlink
+# flash-jlink: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
+# 	mktemp /tmp/flash.jlink
+# 	@echo "Flashing kernel to address $(KERNEL_ADDRESS)..."
+# 	@echo "r" > /tmp/flash.jlink
+# 	@echo "h" >> /tmp/flash.jlink
+# 	@echo "loadbin $< $(KERNEL_ADDRESS)" >> /tmp/flash.jlink
+# 	@echo "r" >> /tmp/flash.jlink
+# 	@echo "g" >> /tmp/flash.jlink
+# 	@echo "q" >> /tmp/flash.jlink
+# 	$(JLINK_EXE) -device $(JLINK_DEVICE) -if $(JLINK_IF) -speed $(JLINK_SPEED) -autoconnect 1 -CommanderScript /tmp/flash.jlink
+# 	@rm -f /tmp/flash.jlink
+# 	@echo "Flash complete!"

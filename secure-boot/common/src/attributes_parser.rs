@@ -5,17 +5,22 @@
 //! Parser for Tock kernel attributes (TLV structure)
 
 use crate::error::BootError;
-use crate::types::{KernelAttributes, KernelVersion, SignatureAttribute};
+use crate::types::{KernelAttributes, KernelVersion, SignatureAttribute, RelocationInfo};
+use crate::BootloaderIO;
 
 /// Parses the kernel attributes section and extracts all TLVs
-pub fn parse_attributes(
+pub fn parse_attributes<IO: BootloaderIO>(
     attributes_start: usize,
-    app_start: usize,
+    attributes_end: usize,
+    io: &IO, 
 ) -> Result<KernelAttributes, BootError> {
     // Calculate the full attributes section size
-    let attr_size = app_start - attributes_start;
+    let attr_size = attributes_end - attributes_start;
+    let mut buf = [0u8; 32];
+    io.debug("attr size: ");
+    io.format(attr_size, &mut buf);
     
-    if attr_size > 512 || attr_size < 8 {
+    if attr_size < 8 {
         return Err(BootError::InvalidTLV);
     }
     
@@ -23,18 +28,20 @@ pub fn parse_attributes(
         core::slice::from_raw_parts(attributes_start as *const u8, attr_size)
     };
     
-    parse_tlvs(attr_slice, attributes_start)
+    parse_tlvs(attr_slice, attributes_start, io)
 }
 
 /// Parses TLVs in reverse order (from end to beginning)
 /// 
 /// The attributes section layout:
 /// [Signature TLV] [Version TLV] [Flash TLV] [App Memory TLV] [Version/Reserved] [TOCK]
-fn parse_tlvs(
+fn parse_tlvs<IO: BootloaderIO>(
     attr_slice: &[u8],
     base_addr: usize,
+    io: &IO,
 ) -> Result<KernelAttributes, BootError> {
     let len = attr_slice.len();
+    let mut buf = [0u8; 32];
     
     // Skip the sentinel "TOCK" (4 bytes) and version/reserved (4 bytes)
     if len < 8 {
@@ -45,6 +52,7 @@ fn parse_tlvs(
     
     let mut attributes = KernelAttributes {
         signature: None,
+        relocation: None,
         kernel_version: None,
         app_memory: None,
         kernel_flash: None,
@@ -74,13 +82,24 @@ fn parse_tlvs(
         
         // Parse based on TLV type
         match tlv_type {
-            0x0104 => {
+            0x0105 => {
                 // Signature TLV
                 if tlv_length != 68 {
                     return Err(BootError::InvalidTLV);
                 }
                 let flash_addr = base_addr + value_start;
                 attributes.signature = Some(parse_signature(
+                    &attr_slice[value_start..value_end],
+                    flash_addr,
+                )?);
+            }
+            0x0104 => {
+                // Relocation TLV (NEW)
+                if tlv_length < 8 {
+                    return Err(BootError::InvalidTLV);
+                }
+                let flash_addr = base_addr + value_start;
+                attributes.relocation = Some(parse_relocations(
                     &attr_slice[value_start..value_end],
                     flash_addr,
                 )?);
@@ -144,6 +163,28 @@ fn parse_signature(data: &[u8], flash_addr: usize) -> Result<SignatureAttribute,
         s,
         algorithm_id,
         location: (flash_addr, flash_addr + 64),
+    })
+}
+
+/// Parse relocation symbols
+fn parse_relocations(data: &[u8], flash_addr: usize) -> Result<RelocationInfo, BootError> {
+    if data.len() < 8 {
+        return Err(BootError::InvalidTLV);
+    }
+    
+    let link_address = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let num_entries = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    
+    // Verify we have enough data for all entries
+    let required_size = 8 + (num_entries as usize * 12);
+    if data.len() < required_size {
+        return Err(BootError::InvalidTLV);
+    }
+    
+    Ok(RelocationInfo {
+        link_address,
+        num_entries,
+        entries_start: flash_addr + 8,  // After link_address and num_entries
     })
 }
 

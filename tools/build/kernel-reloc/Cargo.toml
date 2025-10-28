@@ -1,0 +1,14 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2025.
+
+[package]
+name = "kernel-reloc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+goblin = "0.8"
+byteorder = "1.5"
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }

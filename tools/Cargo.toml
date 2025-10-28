@@ -10,6 +10,7 @@ members = [
     "ci/qemu-runner",
     "build/sha256sum",
     "build/sign-kernel",
+    "build/kernel-reloc",
     "debugging-and-development/alert_codes",
     "debugging-and-development/usb/bulk-echo",
     "debugging-and-development/usb/bulk-test",

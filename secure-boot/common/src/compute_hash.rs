@@ -20,14 +20,14 @@ fn range_ok(start: usize, end: usize) -> bool {
 }
 
 /// Wrapper to verifies all address ranges before reading.
-/// Hashes [region.start .. app_start) with the 64-byte signature zeroed.
-pub fn compute_kernel_hash_safely(
+/// Hashes [region.start .. kernel_end) with the 64-byte signature zeroed.
+pub fn compute_kernel_hash(
     region: &KernelRegion,
     signature: &SignatureAttribute,
-    app_start: usize,
+    kernel_end: usize,
 ) -> Result<[u8; 32], BootError> {
     let kernel_start = region.start;
-    let kernel_end = app_start;
+    let kernel_end = kernel_end;
     let (signature_start, signature_end) = signature.location;
 
     // Basic checks

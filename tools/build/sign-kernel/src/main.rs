@@ -3,7 +3,7 @@
 // Copyright Tock Contributors 2025.
 
 //! Kernel signing tool for Tock secure boot
-//! Sign a Tock kernel image: hash [KERNEL_START..APP_START), zeroing the signature
+//! Sign a Tock kernel image: hash [kernel_start..attr_end_paddr), zeroing the signature
 //! window inside .attributes, then write signature back into the ELF.
 //!
 //! cargo add anyhow clap goblin p256 sha2
@@ -16,12 +16,14 @@ use p256::pkcs8::DecodePrivateKey;
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
 
-/// Adjust to your board/bootloader split.
-const KERNEL_START: usize = 0x0000_8000;
-const APP_START: usize = 0x0004_0000;
+// /// Adjust to your board/bootloader split.
+// const kernel_start: usize = 0x0000_8000;
+// const attr_end_paddr: usize = 0x0004_0000;
 
 /// TLV layout: value is r || s || algo_id
-const TLV_TYPE_SIGNATURE: u16 = 0x0104;
+const TLV_TYPE_SIGNATURE: u16 = 0x0105;
+const TLV_TYPE_KERNEL_FLASH: u16 = 0x0102;
+
 const SIG_RS_LEN: usize = 64;
 const SIG_ALGO_LEN: usize = 4;
 const SIG_VALUE_LEN: usize = SIG_RS_LEN + SIG_ALGO_LEN;
@@ -60,77 +62,96 @@ fn main() -> Result<()> {
     let mut elf_bytes = fs::read(&args.kernel).context("read ELF")?;
     let elf = Elf::parse(&elf_bytes).context("parse ELF")?;
 
-    // 1) Locate .attributes inside the file and the PT_LOAD that contains it.
+    // 1) Locate .attributes + its PT_LOAD → get physical base of attributes
     let (attr_off, attr_size) = locate_attributes(&elf, &elf_bytes)?;
-    let attr_segment = segment_containing_offset(&elf, attr_off, attr_size)
+    let attr_seg = segment_containing_offset(&elf, attr_off, attr_size)
         .context("PT_LOAD containing .attributes not found")?;
+    let attr_paddr = (attr_seg.p_paddr as usize) + (attr_off - attr_seg.p_offset as usize);
+    let attr_slice = &elf_bytes[attr_off..attr_off + attr_size];
 
-    // Compute the physical address of .attributes start.
-    let attr_paddr = (attr_segment.p_paddr as usize) + (attr_off - attr_segment.p_offset as usize);
+    // 2) Parse TLVs in .attributes (walk backwards)
+    let (sig_val_off_in_attr, _sig_hdr_off_in_attr) =
+        find_tlv_value(attr_slice, TLV_TYPE_SIGNATURE)
+            .context("Signature TLV not found")?;
+    let (_kern_flash_val_off_in_attr, kern_flash_len) =
+        parse_kernel_flash_len(attr_slice)
+            .context("Kernel Flash TLV (0x0102) not found")?;
 
-    // 2) Find the Signature TLV value range inside .attributes.
-    let sig_value_off_in_attr =
-        find_signature_tlv_value(&elf_bytes[attr_off..attr_off + attr_size])?;
-    let sig_value_off_in_elf = attr_off + sig_value_off_in_attr;
-    let sig_value_paddr = attr_paddr + sig_value_off_in_attr;
+    // Physical addresses
+    let sig_value_paddr = attr_paddr + sig_val_off_in_attr;
 
-    // Ensure signature and signature||algo (68 bytes) are fully within the kernel hash window.
-    ensure_window_in_region(sig_value_paddr, SIG_RS_LEN, KERNEL_START, APP_START)
-        .context("signature signature outside kernel hash window")?;
-    ensure_window_in_region(sig_value_paddr, SIG_VALUE_LEN, KERNEL_START, APP_START)
-        .context("signature signature||algo outside kernel hash window")?;
+    // IMPORTANT: set hash window to [kernel_start_paddr .. attributes_end_paddr)
+    let attributes_end_paddr   = attr_paddr + attr_size;
+    let kernel_len             = kern_flash_len as usize; // TLV length is just the kernel length field we read
+    let kernel_start_paddr     = attr_paddr.checked_sub(kernel_len)
+        .context("attributes_end < kernel_len")?;
 
-    // 3) Build the hash over [KERNEL_START..APP_START), zeroing the signature area.
-    println!(
-        "Hashing flash region 0x{KERNEL_START:08x}..0x{APP_START:08x} ({} bytes)",
-        APP_START - KERNEL_START
-    );
+    println!("Hashing flash region 0x{kernel_start_paddr:08x}..0x{attributes_end_paddr:08x} ({} bytes)",
+             attributes_end_paddr - kernel_start_paddr);
 
-    let mut loads: Vec<goblin::elf::ProgramHeader> = elf
-        .program_headers
-        .iter()
-        .cloned()
-        .filter(|ph| ph.p_type == PT_LOAD)
-        .collect();
-
+    // Gather PT_LOADs (sorted by p_paddr) for a flash view
+    let mut loads: Vec<_> = elf.program_headers.iter().cloned().filter(|ph| ph.p_type == PT_LOAD).collect();
     loads.sort_by_key(|ph| ph.p_paddr);
 
+    // 3) Compute digest over that window, zeroing signature value bytes
     let digest = hash_flash_window(
         &elf_bytes,
         &loads,
-        KERNEL_START,
-        APP_START,
+        kernel_start_paddr,
+        attributes_end_paddr,
         sig_value_paddr,
-        SIG_RS_LEN,
+        SIG_RS_LEN, // 64; only the signature r||s is zeroed while hashing
     )?;
 
-    // 4) Sign the digest with P-256 and write signature||algo back into the ELF.
+    // 4) Sign and write back (unchanged)
     let signing_key_pem = if let Some(path) = args.key {
         fs::read_to_string(path).context("read private key PEM")?
     } else {
         PRIVATE_KEY_PEM.to_string()
     };
-
     let sk = SigningKey::from_pkcs8_pem(signing_key_pem.trim()).context("load private key")?;
     let sig: Signature = sk.sign_prehash(&digest).context("sign_prehash")?;
-    let rs = sig.to_bytes(); // signature
+    let rs = sig.to_bytes();
 
-    // Write signature
-    elf_bytes[sig_value_off_in_elf..sig_value_off_in_elf + SIG_RS_LEN].copy_from_slice(&rs);
-    // Write algorithm id right after
-    elf_bytes[sig_value_off_in_elf + SIG_RS_LEN..sig_value_off_in_elf + SIG_VALUE_LEN]
+    // Overwrite signature value (r||s) + algo id as before
+    let sig_value_off_in_elf = attr_off + sig_val_off_in_attr;
+    elf_bytes[sig_value_off_in_elf .. sig_value_off_in_elf + SIG_RS_LEN].copy_from_slice(&rs);
+    elf_bytes[sig_value_off_in_elf + SIG_RS_LEN .. sig_value_off_in_elf + SIG_VALUE_LEN]
         .copy_from_slice(&ALGO_ECDSA_P256_SHA256.to_le_bytes());
 
     fs::write(&out_path, &elf_bytes).context("write signed ELF")?;
-    println!(
-        "Signed kernel saved to {} (digest: {})",
-        out_path.display(),
-        hex(&digest)
-    );
+    println!("Signed kernel saved to {}", out_path.display());
     Ok(())
 }
 
 // ---------- helpers -----------
+
+/// Find a TLV by type; returns (value_start_offset_in_attr, header_offset_in_attr)
+fn find_tlv_value(attr: &[u8], tlv_type: u16) -> Result<(usize, usize)> {
+    if attr.len() < 8 { return Err(anyhow!(".attributes too small")); }
+    if &attr[attr.len()-4..] != b"TOCK" { return Err(anyhow!("TOCK sentinel not found")); }
+    let mut pos = attr.len() - 8; // just before version/reserved
+    for _ in 0..128 {
+        if pos < 4 { break; }
+        let t  = u16::from_le_bytes([attr[pos-4], attr[pos-3]]);
+        let ln = u16::from_le_bytes([attr[pos-2], attr[pos-1]]) as usize;
+        if pos < 4 + ln { return Err(anyhow!("malformed TLV chain")); }
+        let value_start = pos - 4 - ln;
+        let header_off  = pos - 4;
+        if t == tlv_type { return Ok((value_start, header_off)); }
+        pos = value_start;
+    }
+    Err(anyhow!(format!("TLV 0x{tlv_type:04x} not found")))
+}   
+
+/// Parse Kernel Flash TLV (0x0102) and return (ignored_start, len)
+fn parse_kernel_flash_len(attr: &[u8]) -> Result<(u32, u32)> {
+    let (value_off, _hdr) = find_tlv_value(attr, TLV_TYPE_KERNEL_FLASH)?;
+    let v = &attr[value_off .. value_off + 8];
+    let start = u32::from_le_bytes([v[0],v[1],v[2],v[3]]); // link-time ORIGIN(rom), not used
+    let len   = u32::from_le_bytes([v[4],v[5],v[6],v[7]]);
+    Ok((start, len))
+}
 
 fn locate_attributes<'a>(elf: &Elf<'a>, bytes: &'a [u8]) -> Result<(usize, usize)> {
     let (off, size) = elf
@@ -177,6 +198,53 @@ fn ensure_window_in_region(
     } else {
         Ok(())
     }
+}
+
+
+/// Find Kernel Flash TLV to get kernel region bounds
+fn find_kernel_flash_tlv(attr: &[u8]) -> Result<(usize, usize)> {
+    if attr.len() < 8 {
+        return Err(anyhow!(".attributes too small"));
+    }
+
+    // Verify trailing TOCK sentinel
+    let tail = &attr[attr.len() - 8..];
+    if tail[4..8] != *b"TOCK" {
+        return Err(anyhow!("attributes sentinel 'TOCK' not found at end"));
+    }
+
+    // Walk TLVs backwards
+    let mut pos = attr.len() - 8;
+    for _ in 0..64 {
+        if pos < 4 {
+            break;
+        }
+        
+        let tlv_type = u16::from_le_bytes([attr[pos - 4], attr[pos - 3]]);
+        let tlv_len = u16::from_le_bytes([attr[pos - 2], attr[pos - 1]]) as usize;
+
+        if pos < 4 + tlv_len {
+            return Err(anyhow!("malformed TLV chain"));
+        }
+        
+        let value_start = pos - 4 - tlv_len;
+
+        if tlv_type == TLV_TYPE_KERNEL_FLASH {
+            if tlv_len != 8 {
+                return Err(anyhow!("Kernel Flash TLV wrong length: {}", tlv_len));
+            }
+            
+            let value = &attr[value_start..value_start + 8];
+            let start = u32::from_le_bytes([value[0], value[1], value[2], value[3]]) as usize;
+            let length = u32::from_le_bytes([value[4], value[5], value[6], value[7]]) as usize;
+            
+            return Ok((start, length));
+        }
+
+        pos = value_start;
+    }
+
+    Err(anyhow!("Kernel Flash TLV (0x{TLV_TYPE_KERNEL_FLASH:04x}) not found"))
 }
 
 /// Find Signature TLV **value** start offset inside `.attributes`.

@@ -5,9 +5,9 @@
 /* Memory Space Definitions, 1M flash, 256K ram */
 MEMORY
 {
-  /*rom (rx)  : ORIGIN = 0x00000000, LENGTH = 256K*/
-  rom (rx)  : ORIGIN = 0x00008000, LENGTH = 224K  /* Makes space for bootloader partition*/
-  prog (rx) : ORIGIN = 0x00040000, LENGTH = 768K
+  /* Kernel can be placed anywhere, but linked for address 0x0 */
+  /* Bootloader will relocate at runtime */
+  rom (rx)  : ORIGIN = 0x00000000, LENGTH = 1M
   ram (rwx) : ORIGIN = 0x20000000, LENGTH = 256K
 }
 

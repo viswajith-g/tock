@@ -9,7 +9,7 @@ pub enum BootError {
     /// "TOCK" sentinel not found in expected location
     SentinelNotFound,
     
-    /// Kernel signature attribute (0x0104) not found
+    /// Kernel signature attribute (0x0105) not found
     SignatureMissing,
     
     /// Invalid TLV structure or length
@@ -32,4 +32,16 @@ pub enum BootError {
     
     /// Hash computation failed
     HashError,
+
+    /// BDT invalid or corrupted
+    InvalidBDT,
+    
+    /// BDT checksum failed
+    BDTChecksumFailed,
+    
+    /// No valid kernel found in BDT
+    NoValidKernel,
+
+    /// Flash Operation Failed
+    FlashOperationFailed,
 }

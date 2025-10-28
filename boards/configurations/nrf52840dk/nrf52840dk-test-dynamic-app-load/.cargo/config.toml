@@ -1,0 +1,6 @@
+[target.thumbv7em-none-eabi]
+rustflags = [
+    "--cfg", "cfg_tock_buildflagssentinel",
+    "-C", "relocation-model=pic",
+    "-C", "link-arg=--emit-relocs"
+]
