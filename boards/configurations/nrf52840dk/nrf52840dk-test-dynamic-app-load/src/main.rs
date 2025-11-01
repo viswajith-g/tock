@@ -126,7 +126,6 @@ unsafe fn create_peripherals() -> &'static mut Nrf52840DefaultPeripherals<'stati
         Nrf52840DefaultPeripherals,
         Nrf52840DefaultPeripherals::new(ieee802154_ack_buf)
     );
-
     nrf52840_peripherals
 }
 
@@ -411,24 +410,78 @@ pub unsafe fn main() {
 
     // These symbols are defined in the standard Tock linker script.
     extern "C" {
-        /// Beginning of the ROM region containing app images.
-        static _sapps: u8;
-        /// End of the ROM region containing app images.
-        static _eapps: u8;
+        // /// Beginning of the ROM region containing app images.
+        // static _sapps: u8;
+        // /// End of the ROM region containing app images.
+        // static _eapps: u8;
         /// Beginning of the RAM region for app memory.
         static mut _sappmem: u8;
         /// End of the RAM region for app memory.
         static _eappmem: u8;
     }
 
+    // #[used]
+    // #[link_section = ".rodata.symdump"]
+    // static SYM_DUMP: [usize; 2] = [
+    //     core::ptr::addr_of!(_sappmem) as usize,
+    //     core::ptr::addr_of!(_eappmem) as usize,
+    // ];
+
+    // #[inline(always)]
+    // fn align_down(x: usize, a: usize) -> usize { x & !(a - 1) }
+    // #[inline(always)]
+    // fn align_up(x: usize, a: usize) -> usize { (x + a - 1) & !(a - 1) }
+
+    // let sappmem = core::ptr::addr_of_mut!(_sappmem) as usize;
+    // let eappmem = core::ptr::addr_of!(_eappmem) as usize;
+
+    // // kernel::debug!("appmem: [{:#010x} .. {:#010x})", sappmem, eappmem);
+
+    // // Choose an MPU power-of-two size that fits: try 128 KiB first, then 64 KiB, etc.
+    // const CANDIDATES: [usize; 4] = [128 * 1024, 64 * 1024, 32 * 1024, 16 * 1024];
+
+    // let (base, size) = CANDIDATES.iter()
+    //     .find_map(|&sz| {
+    //         // Try to place a sz-aligned window entirely inside [sappmem, eappmem)
+    //         let end_aligned = align_down(eappmem, sz);
+    //         let start = end_aligned.saturating_sub(sz);
+    //         if start >= sappmem { Some((start, sz)) } else { None }
+    //     })
+    //     .expect("No MPU-legal app RAM window fits");
+
+    // // Optional: leave 0x100 bytes headroom at top if you mirror _eappmem - 0x100
+    // let end = base + size;
+
+    // // Create the slice you hand to the loader
+    // let app_memory=
+    //     core::slice::from_raw_parts_mut(base as *mut u8, end - base);
+
+    // We cannot trust _sapps and _eapps because _sapps could be from wherever
+    // the kernel ends based on its linker layout, so we hardcode the entire
+    // flash range for the nrf52840dk. The loader will take care of regions 
+    // that should be skipped.
+    const FLASH_START: usize = 0x000000;
+    const FLASH_END:   usize = 0x100000;
+
+    // kernel::debug!(
+    //     "app_flash: [{:#010x} .. {:#010x}) len=0x{:x}",
+    //     FLASH_START, FLASH_END, FLASH_END - FLASH_START
+    // );
+    // kernel::debug!("appmem: [{:#010x} .. {:#010x})", base, end);
+
+    // kernel::debug!("VTOR={:#x}", cortexm4::scb::SCB.get_vtor());
+
     let app_flash = core::slice::from_raw_parts(
-        core::ptr::addr_of!(_sapps),
-        core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
-    );
+            FLASH_START as *const u8,
+            FLASH_END - FLASH_START,
+        );
+
     let app_memory = core::slice::from_raw_parts_mut(
         core::ptr::addr_of_mut!(_sappmem),
         core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
     );
+
+    // kernel::debug!("Kernel version: {}.{}", kernel::KERNEL_MAJOR_VERSION, kernel::KERNEL_MINOR_VERSION);
 
     // Create and start the asynchronous process loader.
     let loader = components::loader::sequential::ProcessLoaderSequentialComponent::new(

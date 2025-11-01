@@ -2,5 +2,6 @@
 rustflags = [
     "--cfg", "cfg_tock_buildflagssentinel",
     "-C", "relocation-model=pic",
-    "-C", "link-arg=--emit-relocs"
+    "-C", "link-arg=--emit-relocs",
+    "-C", "debuginfo=1"
 ]

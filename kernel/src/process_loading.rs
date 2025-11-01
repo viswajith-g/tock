@@ -456,7 +456,7 @@ pub trait ProcessLoadingAsync<'a> {
 }
 
 /// Operating mode of the loader.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum SequentialProcessLoaderMachineState {
     /// Phase of discovering `ProcessBinary` objects in flash.
     DiscoverProcessBinaries,
@@ -487,6 +487,127 @@ pub enum PaddingRequirement {
     PostPad,
     PreAndPostPad,
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// BINARY DISCOVERY TABLE (BDT) READING
+////////////////////////////////////////////////////////////////////////////////
+
+// BDT constants (must match bootloader)
+const BDT_ADDR: usize = 0x8000;
+const BDT_MAGIC: [u8; 4] = *b"BDTS";
+const MAX_KERNEL_ENTRIES: usize = 120;
+
+const BINARY_TYPE_KERNEL: u8 = 0x01;
+const BINARY_TYPE_APP: u8 = 0x02;
+
+/// Binary entry from BDT
+#[derive(Copy, Clone, Debug)]
+struct BinaryEntry {
+    start_address: u32,
+    size: u32,
+    version: [u8; 3],
+    binary_type: u8,
+    reserved: [u8; 4],
+}
+
+impl BinaryEntry {
+    fn is_valid(&self) -> bool {
+        self.start_address >= 0x9000
+            && self.size > 0
+            && self.start_address < 0x100000
+            && self.size < 0x100000
+    }
+}
+
+/// BDT Header
+#[derive(Copy, Clone)]
+struct BdtHeader {
+    magic: [u8; 4],
+    kernel_count: u16,
+    app_count: u16,
+    reserved: [u8; 8],
+}
+
+/// Read BDT from flash
+fn read_bdt() -> Option<(BdtHeader, [BinaryEntry; MAX_KERNEL_ENTRIES])> {
+    let bdt_ptr = BDT_ADDR as *const u8;
+    
+    // Read header (16 bytes)
+    let header = unsafe {
+        BdtHeader {
+            magic: [
+                bdt_ptr.read_volatile(),
+                bdt_ptr.add(1).read_volatile(),
+                bdt_ptr.add(2).read_volatile(),
+                bdt_ptr.add(3).read_volatile(),
+            ],
+            kernel_count: u16::from_le_bytes([
+                bdt_ptr.add(4).read_volatile(),
+                bdt_ptr.add(5).read_volatile(),
+            ]),
+            app_count: u16::from_le_bytes([
+                bdt_ptr.add(6).read_volatile(),
+                bdt_ptr.add(7).read_volatile(),
+            ]),
+            reserved: [0; 8], // Skip reserved bytes
+        }
+    };
+    
+    // Check magic
+    if header.magic != BDT_MAGIC {
+        return None;
+    }
+    
+    // Read kernel entries (start at offset 16)
+    let mut kernel_entries = [BinaryEntry {
+        start_address: 0,
+        size: 0,
+        version: [0; 3],
+        binary_type: 0,
+        reserved: [0; 4],
+    }; MAX_KERNEL_ENTRIES];
+    
+    let entries_start = unsafe { bdt_ptr.add(16) };
+    for i in 0..kernel_entries.len() {
+        let entry_ptr = unsafe { entries_start.add(i * 16) };
+        kernel_entries[i] = unsafe {
+            BinaryEntry {
+                start_address: u32::from_le_bytes([
+                    entry_ptr.read_volatile(),
+                    entry_ptr.add(1).read_volatile(),
+                    entry_ptr.add(2).read_volatile(),
+                    entry_ptr.add(3).read_volatile(),
+                ]),
+                size: u32::from_le_bytes([
+                    entry_ptr.add(4).read_volatile(),
+                    entry_ptr.add(5).read_volatile(),
+                    entry_ptr.add(6).read_volatile(),
+                    entry_ptr.add(7).read_volatile(),
+                ]),
+                version: [
+                    entry_ptr.add(8).read_volatile(),
+                    entry_ptr.add(9).read_volatile(),
+                    entry_ptr.add(10).read_volatile(),
+                ],
+                binary_type: entry_ptr.add(11).read_volatile(),
+                reserved: [0; 4],
+            }
+        };
+    }
+    
+    Some((header, kernel_entries))
+}
+
+/// Flash exclusion region
+#[derive(Copy, Clone, Debug)]
+struct ExclusionRegion {
+    start: usize,
+    end: usize,
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SEQUENTIAL PROCESS LOADING MACHINE
+////////////////////////////////////////////////////////////////////////////////
 
 /// A machine for loading processes stored sequentially in a region of flash.
 ///
@@ -590,41 +711,130 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         })
     }
 
-    fn load_and_check(&self) {
-        let ret = self.discover_process_binary();
-        match ret {
-            Ok(pb) => match self.checker.check(pb) {
-                Ok(()) => {}
-                Err(e) => {
-                    self.get_current_client().map(|client| {
-                        client.process_loaded(Err(ProcessLoadError::CheckError(e)));
-                    });
+    /// Helper function to find the next potential aligned address for the
+    /// new app with size `app_length` assuming Cortex-M alignment rules.
+    fn find_next_cortex_m_aligned_address(&self, address: usize, app_length: usize) -> usize {
+        let remaining = address % app_length;
+        if remaining == 0 {
+            address
+        } else {
+            address + (app_length - remaining)
+        }
+    }
+
+    /// Build exclusion list once at the start of loading
+    fn build_exclusion_list(&self) -> ([Option<ExclusionRegion>; 16], usize) {
+        let mut exclusions = [None; 16];
+        let mut count = 0;
+        
+        // Bootloader region (0x0 - 0x9000)
+        exclusions[count] = Some(ExclusionRegion {
+            start: 0x0,
+            end: 0x9000,
+        });
+        count += 1;
+        
+        if config::CONFIG.debug_load_processes {
+            debug!("Exclusion: Bootloader 0x0 - 0x9000");
+        }
+        
+        // Read BDT and add kernel regions
+        if let Some((header, kernel_entries)) = read_bdt() {
+            let kernel_count = header.kernel_count as usize;
+            
+            for i in 0..kernel_count.min(MAX_KERNEL_ENTRIES) {
+                let entry = &kernel_entries[i];
+                if entry.binary_type == BINARY_TYPE_KERNEL && entry.is_valid() {
+                    let start = entry.start_address as usize;
+                    let end = start + entry.size as usize;
+                    
+                    exclusions[count] = Some(ExclusionRegion { start, end });
+                    count += 1;
+                    
+                    if config::CONFIG.debug_load_processes {
+                        debug!("Exclusion: Kernel 0x{:x} - 0x{:x}", start, end);
+                    }
+                    
+                    if count >= 16 {
+                        break;
+                    }
                 }
-            },
-            Err(ProcessBinaryError::NotEnoughFlash)
-            | Err(ProcessBinaryError::TbfHeaderNotFound) => {
-                // These two errors occur when there are no more app binaries in
-                // flash. Now we can move to actually loading process binaries
-                // into full processes.
-
-                self.state
-                    .set(SequentialProcessLoaderMachineState::LoadProcesses);
-                self.deferred_call.set();
-            }
-            Err(e) => {
-                if config::CONFIG.debug_load_processes {
-                    debug!("Loading: unable to create ProcessBinary: {:?}", e);
-                }
-
-                // Other process binary errors indicate the process is not
-                // compatible. Signal error and try the next item in flash.
-                self.get_current_client().map(|client| {
-                    client.process_loaded(Err(ProcessLoadError::BinaryError(e)));
-                });
-
-                self.deferred_call.set();
             }
         }
+        
+        (exclusions, count)
+    }
+    
+    /// Check if address is in an exclusion region, return end address if true
+    fn check_if_in_exclusion_region(&self, addr: usize) -> Option<usize> {
+        let (exclusions, exclusion_count) = self.build_exclusion_list();
+        
+        for i in 0..exclusion_count {
+            if let Some(region) = exclusions[i] {
+                if addr >= region.start && addr < region.end {
+                    return Some(region.end);
+                }
+            }
+        }
+        None
+    }
+
+    fn load_and_check(&self) {
+        // Scan entire flash - scan function automatically skips exclusion zones
+        let mut app_starts = [0usize; 10];
+        let mut app_ends = [0usize; 10];
+        
+        let _ = self.scan_flash_for_process_binaries(
+            self.flash_bank.get(),
+            &mut app_starts,
+            &mut app_ends
+        );
+        
+        // Get current position to track which apps we've already processed
+        let current_pos = self.flash.get().as_ptr() as usize;
+        
+        // Find the first unprocessed app
+        for i in 0..app_starts.len() {
+            if app_starts[i] == 0 {
+                break; // No more apps
+            }
+            
+            if app_starts[i] < current_pos + 1 {
+                continue; // Already processed this app
+            }
+            
+            // Set flash pointer to this app
+            let flash_bank = self.flash_bank.get();
+            let offset = app_starts[i] - flash_bank.as_ptr() as usize;
+
+            // debug!("offset: {:?}", offset);
+            
+            if let Some(app_flash) = flash_bank.get(offset..) {
+                self.flash.set(app_flash);
+
+                let flash_slice_start = self.flash.get().as_ptr() as usize;
+                let flash_slice_end = flash_slice_start + self.flash.get().len() as usize;
+                
+                match self.discover_process_binary() {
+                    Ok(pb) => {
+                        match self.checker.check(pb) {
+                            // Wait for checker async callback
+                            Ok(()) => {return;}
+                            // Check failed, continue to next app
+                            Err(_e) => {continue;}
+                        }
+                    }
+                    Err(_e) => {
+                        // Binary discovery failed, continue to next app
+                        continue;
+                    }
+                }
+            }
+        }
+        
+        // All apps checked, move to loading
+        self.state.set(SequentialProcessLoaderMachineState::LoadProcesses);
+        self.deferred_call.set();
     }
 
     /// Try to parse a process binary from flash.
@@ -860,13 +1070,23 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             flash: &'static [u8],
             process_binaries_start_addresses: &mut [usize],
             process_binaries_end_addresses: &mut [usize],
+            check_exclusion: impl Fn(usize) -> Option<usize>, // NEW: exclusion checker
         ) -> Result<(), ProcessBinaryError> {
             let flash_end = flash.as_ptr() as usize + flash.len() - 1;
-            let mut addresses = flash.as_ptr() as usize;
+            let flash_start = flash.as_ptr() as usize;
+            let mut addresses = flash_start;
             let mut index: usize = 0;
+            const PAGE_SIZE: usize = 0x1000;
 
             while addresses < flash_end {
-                let flash_offset = addresses - flash.as_ptr() as usize;
+                // Check if we're in exclusion zone
+                if let Some(exclusion_end) = check_exclusion(addresses) {
+                    // Align to next page after exclusion
+                    addresses = ((exclusion_end + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
+                    continue;
+                }
+
+                let flash_offset = addresses - flash_start;
 
                 let test_header_slice = flash
                     .get(flash_offset..flash_offset + 8)
@@ -882,8 +1102,13 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                         Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(app_length)) => {
                             (0, 0, app_length)
                         }
+                        // Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
+                        //     return Ok(());
+                        // }
                         Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
-                            return Ok(());
+                            // Skip to next page and continue scanning
+                            addresses = ((addresses + PAGE_SIZE) / PAGE_SIZE) * PAGE_SIZE;
+                            continue;
                         }
                     };
 
@@ -899,30 +1124,22 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                     .get(flash_offset + app_flash.len()..)
                     .ok_or(ProcessBinaryError::NotEnoughFlash)?;
 
-                // Get the rest of the header. The `remaining_header` variable
-                // will continue to hold the remainder of the header we have
-                // not processed.
                 let remaining_header = app_header
                     .get(16..)
                     .ok_or(ProcessBinaryError::NotEnoughFlash)?;
 
                 if remaining_header.len() == 0 {
-                    // This is a padding app.
-                    if config::CONFIG.debug_load_processes {
-                        debug!("Is padding!");
-                    }
+                    // Padding
                 } else {
-                    // This is an app binary, add it to the pb arrays.
+                    // This is an app binary
                     process_binaries_start_addresses[index] = app_flash.as_ptr() as usize;
                     process_binaries_end_addresses[index] =
                         app_flash.as_ptr() as usize + app_length as usize;
 
                     if config::CONFIG.debug_load_processes {
                         debug!(
-                            "[Metadata] Process binary start address at index {}: {:#010x}, with end_address {:#010x}",
-                            index,
-                            process_binaries_start_addresses[index],
-                            process_binaries_end_addresses[index]
+                            "[Metadata] Process binary at {:#010x}",
+                            process_binaries_start_addresses[index]
                         );
                     }
                     index += 1;
@@ -940,19 +1157,9 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             flash,
             process_binaries_start_addresses,
             process_binaries_end_addresses,
+            |addr| self.check_if_in_exclusion_region(addr),
         )
         .or(Err(()))
-    }
-
-    /// Helper function to find the next potential aligned address for the
-    /// new app with size `app_length` assuming Cortex-M alignment rules.
-    fn find_next_cortex_m_aligned_address(&self, address: usize, app_length: usize) -> usize {
-        let remaining = address % app_length;
-        if remaining == 0 {
-            address
-        } else {
-            address + (app_length - remaining)
-        }
     }
 
     /// Function to compute the address for a new app with size `app_size`.
@@ -1258,6 +1465,7 @@ impl<C: Chip, D: ProcessStandardDebug> DeferredCallClient
 {
     fn handle_deferred_call(&self) {
         // We use deferred calls to start the operation in the async loop.
+        // debug!("=== handle_deferred_call, state={:?} ===", self.state.get());
         match self.state.get() {
             Some(SequentialProcessLoaderMachineState::DiscoverProcessBinaries) => {
                 self.load_and_check();
@@ -1330,8 +1538,6 @@ impl<C: Chip, D: ProcessStandardDebug> crate::process_checker::ProcessCheckerMac
                 });
             }
         }
-
-        // Try to load the next process in flash.
         self.deferred_call.set();
     }
 }

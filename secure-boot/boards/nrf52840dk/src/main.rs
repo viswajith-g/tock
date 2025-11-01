@@ -26,7 +26,7 @@ const LED4_PIN: u32 = 16; // P0.16
 // Include the startup assembly code
 core::arch::global_asm!(include_str!("startup.s"));
 
-/// Minimal `core::fmt::Write` adapter over a fixed buffer (for `#![no_std]`)
+/// Minimal core::fmt::Write adapter
 struct BufferWriter<'a> {
     buf: &'a mut [u8],
     pos: usize,
@@ -68,10 +68,10 @@ impl<'a> core::fmt::Write for BufferWriter<'a> {
 pub extern "C" fn main() -> ! {
     // Initialize I/O
     let io = Nrf52840IO::new();
-    io.debug("\r\n\r\n");
-    io.debug("Secure Boot for Tock");
+    // io.debug("\r\n\r\n");
+    // io.debug("Secure Boot for Tock");
 
-    let mut buf = [0u8; 32];
+    // let mut buf = [0u8; 32];
 
     // let reset_reason = read_reset_reason();
     // clear_reset_reason(reset_reason);
@@ -89,7 +89,7 @@ pub extern "C" fn main() -> ! {
     
     // Signature verification
     match verify_and_boot::<Nrf52840Config, _>(&io) {
-        Ok(kernel_entry) => {
+        Ok((kernel_entry, kernel_end)) => {
 
             // verify stack pointer and reset vector are valid
             let vector_table = kernel_entry as *const u32;
@@ -97,19 +97,19 @@ pub extern "C" fn main() -> ! {
             let reset_vector = unsafe { core::ptr::read_volatile(vector_table.add(1)) } as usize;
 
             let sp_in_sram = (0x2000_0000..0x2004_0000).contains(&sp);
-            let rv_in_flash = (0x9000..0x24E84).contains(&(reset_vector & !1)) && (reset_vector & 1) == 1;
+            let rv_in_flash = (kernel_entry..kernel_end).contains(&(reset_vector & !1)) && (reset_vector & 1) == 1;
 
-            io.debug_blink(
-                LED3_PIN,
-                if !sp_in_sram { 1 } else if !rv_in_flash { 2 } else { 3 },
-            );
+            // io.debug_blink(
+            //     LED3_PIN,
+            //     if !sp_in_sram { 1 } else if !rv_in_flash { 2 } else { 3 },
+            // );
 
             if !(sp_in_sram && rv_in_flash){
                 io.signal_failure();
                 loop {} 
             } else {
                 // Kernel Handoff
-                io.debug("handing off to kernel");
+                // io.debug("handing off to kernel");
 
                 unsafe { jump_to_kernel(kernel_entry, &io); } 
             }
@@ -132,7 +132,7 @@ pub extern "C" fn main() -> ! {
                 BootError::FlashOperationFailed => 15,
             };
             
-            io.debug_blink(LED2_PIN, blink_count);
+            // io.debug_blink(LED2_PIN, blink_count);
             
             // Verification failed
             io.signal_failure();
@@ -146,128 +146,52 @@ pub extern "C" fn main() -> ! {
 /// This function performs the handoff from bootloader to kernel:
 /// 1. Loads the kernel's initial stack pointer
 /// 2. Jumps to the kernel's reset handler
-// unsafe fn jump_to_kernel<IO: BootloaderIO>(kernel_entry: usize, io: &IO) -> ! {
-//     // Vector Table Var Init
-//     let vector_table = kernel_entry as *const u32;
-//     let main_stack_pointer = core::ptr::read_volatile(vector_table);
-//     let reset_vector  = core::ptr::read_volatile(vector_table.add(1));
 
-//     let mut buf = [0u8; 32];
-
-//     io.debug("MSP:");
-//     io.format(main_stack_pointer as usize, &mut buf);
-//     io.debug("Reset vector:");
-//     io.format(reset_vector as usize, &mut buf);
-
-//     // Check if reset vector was relocated correctly
-//     if reset_vector >= 0x9000 && reset_vector < 0x24E84 {
-//         io.debug("Reset vector looks good!");
-//     } else {
-//         io.debug("ERROR: Reset vector outside kernel range!");
-//         io.format(reset_vector as usize, &mut buf);
-//     }
-
-//     unsafe {
-//         const NVMC_CONFIG: *mut u32 = 0x4001_E504 as *mut u32;
-//         const NVMC_READY: *const u32 = 0x4001_E400 as *const u32;
-        
-//         // Set to read-only mode
-//         core::ptr::write_volatile(NVMC_CONFIG, 0);
-        
-//         // Wait for NVMC to be ready
-//         while core::ptr::read_volatile(NVMC_READY) == 0 {}
-        
-//         io.debug("NVMC reset to read mode");
-//     }
-
-//     // Disable UARTE0
-//     const UARTE0_ENABLE: *mut u32 = 0x4000_2500 as *mut u32;
-//     core::ptr::write_volatile(UARTE0_ENABLE, 0); 
-
-//     // Disable interrupts
-//     core::arch::asm!("cpsid i", options(nomem, nostack, preserves_flags));
-
-//     // Disable SysTick
-//     const SYST_CSR: *mut u32 = 0xE000_E010 as *mut u32;
-//     core::ptr::write_volatile(SYST_CSR, 0);
-
-//     // Disable & clear NVIC
-//     const NVIC_ICER0: *mut u32 = 0xE000_E180 as *mut u32;
-//     const NVIC_ICPR0: *mut u32 = 0xE000_E280 as *mut u32;
-//     core::ptr::write_volatile(NVIC_ICER0.add(0), 0xFFFF_FFFF);
-//     core::ptr::write_volatile(NVIC_ICER0.add(1), 0xFFFF_FFFF);
-//     core::ptr::write_volatile(NVIC_ICPR0.add(0), 0xFFFF_FFFF);
-//     core::ptr::write_volatile(NVIC_ICPR0.add(1), 0xFFFF_FFFF);
-
-//     // Disable MPU
-//     const MPU_CTRL: *mut u32 = 0xE000_ED94 as *mut u32;
-//     core::ptr::write_volatile(MPU_CTRL, 0);
-
-//     // Program VTOR to kernel vector table
+// #[inline(always)]
+// unsafe fn set_vtor_and_verify(v: u32) -> bool {
+//     // VTOR must be 128-byte aligned on M4F
+//     if (v & 0x7F) != 0 { return false; }
 //     const SCB_VTOR: *mut u32 = 0xE000_ED08 as *mut u32;
-//     core::ptr::write_volatile(SCB_VTOR, kernel_entry as u32);
+//     core::ptr::write_volatile(SCB_VTOR, v);
 //     core::arch::asm!("dsb; isb", options(nomem, nostack, preserves_flags));
-
-//     // Clear pending SysTick and PendSV
-//     const SCB_ICSR: *mut u32 = 0xE000ED04 as *mut u32;
-//     core::ptr::write_volatile(SCB_ICSR, 1 << 25);
-//     core::ptr::write_volatile(SCB_ICSR, 1 << 27);
-//     core::arch::asm!("dsb; isb", options(nomem, nostack, preserves_flags));
-
-//     // UNMASK exceptions so SVC/PendSV work for the kernel
-//     // PRIMASK=0, BASEPRI=0, FAULTMASK=0
-//     // Without this, kernel keeps hardfaulting because one of these get escalated
-//     core::arch::asm!("msr basepri, {0}",  in(reg) 0u32, options(nomem, nostack, preserves_flags));
-//     core::arch::asm!("msr faultmask, {0}",in(reg) 0u32, options(nomem, nostack, preserves_flags));
-//     core::arch::asm!("cpsie i", options(nomem, nostack, preserves_flags));
-
-//     // Force privileged thread mode
-//     core::arch::asm!("msr control, {0}", in(reg) 0u32, options(nostack, preserves_flags));
-//     core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
-
-//     // Set MSP
-//     core::arch::asm!("msr msp, {0}", in(reg) main_stack_pointer, options(nostack, preserves_flags));
-
-//     // Invalidate instructions cache
-//     const SCB_ICIALLU: *mut u32 = 0xE000_EF50 as *mut u32;
-//     core::ptr::write_volatile(SCB_ICIALLU, 0);
-    
-//     core::arch::asm!("dsb; isb", options(nomem, nostack));
-
-//     // Jump to reset handler
-//     core::arch::asm!("dsb; isb", options(nomem, nostack, preserves_flags));
-//     core::arch::asm!(
-//         "bx {0}",
-//         in(reg) reset_vector | 1,
-//         options(noreturn)
-//     );
+//     core::ptr::read_volatile(SCB_VTOR) == v
 // }
+
 unsafe fn jump_to_kernel<IO: BootloaderIO>(kernel_entry: usize, io: &IO) -> ! {
-    let vector_table = kernel_entry as *const u32;
-    let msp  = core::ptr::read_volatile(vector_table);
-    let reset= core::ptr::read_volatile(vector_table.add(1)); // keep LSB (Thumb)
 
-    let mut buf = [0u8; 32];
-    io.debug("MSP:");          io.format(msp as usize, &mut buf);
-    io.debug("Reset vector:"); io.format(reset as usize, &mut buf);
-
-    // Optional sanity: reset should land inside kernel text
-    // (don’t enforce at runtime if you’re confident)
-    io.debug("Reset vector looks good!");
-
-    // Make sure NVMC back to read
+    // let mut buf = [0u8; 32];
+    // Set NVMC back to read
     const NVMC_CONFIG: *mut u32 = 0x4001_E504 as *mut u32;
     const NVMC_READY:  *const u32 = 0x4001_E400 as *const u32;
     core::ptr::write_volatile(NVMC_CONFIG, 0);
     while core::ptr::read_volatile(NVMC_READY) == 0 {}
-    io.debug("NVMC reset to read mode");
 
-    // Disable SysTick and mask NVIC interrupts (don’t re-enable globally)
+    // Read vector table
+    let vt = kernel_entry as *const u32;
+    let msp = core::ptr::read_volatile(vt);
+    let reset = core::ptr::read_volatile(vt.add(1));
+
+    let vt = kernel_entry as *const u32;
+    let msp   = core::ptr::read_volatile(vt);
+    let reset = core::ptr::read_volatile(vt.add(1));
+    // io.debug("VT[0] MSP=");   io.format(msp as usize, &mut buf);
+    // io.debug("VT[1] Reset="); io.format(reset as usize, &mut buf);
+
+    if (reset & 1) == 0 {
+        // io.debug("reset vector not Thumb");
+        io.signal_failure();
+        loop {}
+    }
+
+    // Mask interrupts
+    core::arch::asm!("cpsid i", options(nomem, nostack, preserves_flags));
+
+    // Stop systick and clear/disable all NVIC
     const SYST_CSR: *mut u32 = 0xE000_E010 as *mut u32;
     core::ptr::write_volatile(SYST_CSR, 0);
 
-    const NVIC_ICER0: *mut u32 = 0xE000_E180 as *mut u32; // IRQ 0..31
-    const NVIC_ICER1: *mut u32 = 0xE000_E184 as *mut u32; // IRQ 32..63
+    const NVIC_ICER0: *mut u32 = 0xE000_E180 as *mut u32;
+    const NVIC_ICER1: *mut u32 = 0xE000_E184 as *mut u32;
     const NVIC_ICPR0: *mut u32 = 0xE000_E280 as *mut u32;
     const NVIC_ICPR1: *mut u32 = 0xE000_E284 as *mut u32;
     core::ptr::write_volatile(NVIC_ICER0, 0xFFFF_FFFF);
@@ -275,34 +199,44 @@ unsafe fn jump_to_kernel<IO: BootloaderIO>(kernel_entry: usize, io: &IO) -> ! {
     core::ptr::write_volatile(NVIC_ICPR0, 0xFFFF_FFFF);
     core::ptr::write_volatile(NVIC_ICPR1, 0xFFFF_FFFF);
 
-    // Keep interrupts disabled globally until we jump
-    core::arch::asm!("cpsid i", options(nomem, nostack, preserves_flags));
+    // Disable MPU
+    const MPU_CTRL: *mut u32 = 0xE000_ED94 as *mut u32;
+    core::ptr::write_volatile(MPU_CTRL, 0);
 
-    // Program VTOR to kernel vector base
+    // let res = set_vtor_and_verify(kernel_entry as u32);
+    if (kernel_entry as u32 & 0x7F) != 0 {
+        // Bad vtor entry
+        io.signal_failure();
+        loop {} 
+    }
     const SCB_VTOR: *mut u32 = 0xE000_ED08 as *mut u32;
     core::ptr::write_volatile(SCB_VTOR, kernel_entry as u32);
     core::arch::asm!("dsb; isb", options(nomem, nostack, preserves_flags));
 
-    // Clear pending SysTick + PendSV (write-1-to-clear; do both in one write)
+    // Clear pending faults like SysTick/PendSV
     const SCB_ICSR: *mut u32 = 0xE000_ED04 as *mut u32;
-    const PENDSVCLR: u32 = 1 << 27;
-    const PENDSTCLR: u32 = 1 << 25;
-    core::ptr::write_volatile(SCB_ICSR, PENDSVCLR | PENDSTCLR);
+    core::ptr::write_volatile(SCB_ICSR, (1 << 25) | (1 << 27)); // CLRPEND SysTick, PendSV
     core::arch::asm!("dsb; isb", options(nomem, nostack, preserves_flags));
 
-    // Ensure privileged thread mode
+    // Unmask exceptions so SVC/PendSV work for the kernel
+    // PRIMASK=0, BASEPRI=0, FAULTMASK=0
+    // Without this, kernel keeps hardfaulting because one of these get escalated
+    core::arch::asm!("msr basepri, {0}",  in(reg) 0u32, options(nomem, nostack, preserves_flags));
+    core::arch::asm!("msr faultmask, {0}",in(reg) 0u32, options(nomem, nostack, preserves_flags));
+    core::arch::asm!("cpsie i", options(nomem, nostack, preserves_flags));
+    
+    // Privileged thread mode
     core::arch::asm!("msr control, {0}", in(reg) 0u32, options(nostack, preserves_flags));
     core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
 
-    // Load MSP from kernel vector table
+    // Load MSP from vector[0]
     core::arch::asm!("msr msp, {0}", in(reg) msp, options(nostack, preserves_flags));
-    core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+    core::arch::asm!("dsb; isb", options(nomem, nostack, preserves_flags));
 
-    // Branch to kernel reset handler (preserve Thumb bit)
-    let reset_thumb = reset | 1;
+    // Branch to reset handler
     core::arch::asm!(
-        "bx {rst}",
-        rst = in(reg) reset_thumb,
+        "bx {0}",
+        in(reg) (reset | 1),
         options(noreturn)
     );
 }

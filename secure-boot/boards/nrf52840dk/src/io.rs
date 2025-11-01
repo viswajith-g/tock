@@ -32,41 +32,15 @@ const CONFIG: *mut u32 = (UARTE0_BASE + 0x56C) as *mut u32;
 const TXD_PTR: *mut u32 = (UARTE0_BASE + 0x544) as *mut u32;
 const TXD_MAXCNT: *mut u32 = (UARTE0_BASE + 0x548) as *mut u32;
 
-/// TX pin used by the DK’s on-board USB-serial bridge
-const TX_PIN_P0_06: u32 = 6;
 
 
 /// nRF52840DK I/O implementation
 pub struct Nrf52840IO;
 
 impl Nrf52840IO {
-    /// Initialize GPIO for LED control
+    /// Initialize GPIO for LED control and UART debug
     pub fn new() -> Self {
-        // Configure all LEDs as outputs
         unsafe {
-            // // LED1
-            // let pin_cnf_addr = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (LED1_PIN as usize * 4);
-            // core::ptr::write_volatile(pin_cnf_addr as *mut u32, 0x00000001); // DIR=Output
-            
-            // // LED2
-            // let pin_cnf_addr = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (LED2_PIN as usize * 4);
-            // core::ptr::write_volatile(pin_cnf_addr as *mut u32, 0x00000001); // DIR=Output
-
-            // // LED3
-            // let pin_cnf_addr = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (LED3_PIN as usize * 4);
-            // core::ptr::write_volatile(pin_cnf_addr as *mut u32, 0x00000001); // DIR=Output
-
-            // // LED4
-            // let pin_cnf_addr = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (LED4_PIN as usize * 4);
-            // core::ptr::write_volatile(pin_cnf_addr as *mut u32, 0x00000001); // DIR=Output
-            
-            // // Turn off all LEDs initially
-            // let outset_addr = GPIO_P0_BASE + GPIO_OUTSET_OFFSET;
-            // core::ptr::write_volatile(
-            //     outset_addr as *mut u32,
-            //     (1 << LED1_PIN) | (1 << LED2_PIN) | (1 << LED3_PIN) | (1 << LED4_PIN)
-            // );
-
             for &pin in &[LED1_PIN, LED2_PIN, LED3_PIN, LED4_PIN] {
                 let pin_cnf_addr = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (pin as usize * 4);
                 core::ptr::write_volatile(pin_cnf_addr as *mut u32, 0x0000_0001); // DIR=Output
@@ -77,36 +51,26 @@ impl Nrf52840IO {
 
 
             // Initialize UARTE for debug output
-            // First, disable UART
             core::ptr::write_volatile(ENABLE, 0);
-            
-            // Configure pins: TX=P0.06, RX=P0.08 (nRF52840DK standard)
             core::ptr::write_volatile(PSEL_TXD, 6);
             core::ptr::write_volatile(PSEL_RXD, 8);
             
-            // Configure P0.06 as output
             let tx_cnf = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (6 * 4);
-            core::ptr::write_volatile(tx_cnf as *mut u32, 0x00000003); // Output, high drive
+            core::ptr::write_volatile(tx_cnf as *mut u32, 0x00000003);
             
-            // Configure P0.08 as input
             let rx_cnf = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (8 * 4);
-            core::ptr::write_volatile(rx_cnf as *mut u32, 0x00000000); // Input
+            core::ptr::write_volatile(rx_cnf as *mut u32, 0x00000000);
             
-            // Baudrate: 115200 bps
             core::ptr::write_volatile(BAUDRATE, 0x01D7E000);
             
-            // Config: no flow control, no parity, 1 stop bit
             core::ptr::write_volatile(CONFIG, 0x00000000);
             
-            // Enable UART
             core::ptr::write_volatile(ENABLE, 8);
-            
-            // Small settling delay
+ 
             for _ in 0..10_000 {
                 core::arch::asm!("nop");
             }
         }
-        
         Self
     }
     
@@ -152,37 +116,27 @@ impl Nrf52840IO {
             let bytes = msg.as_bytes();
             let len = bytes.len().min(256);
             
-            // Copy to static buffer
             UART_BUF[..len].copy_from_slice(&bytes[..len]);
             
-            // Wait for any previous transmission to complete
             let mut timeout = 100_000;
             while core::ptr::read_volatile(EVENTS_ENDTX) == 0 && timeout > 0 {
                 cortex_m::asm::nop();
                 timeout -= 1;
             }
             
-            // Clear event
             core::ptr::write_volatile(EVENTS_ENDTX, 0);
-            
-            // Set up DMA with static buffer
             core::ptr::write_volatile(TXD_PTR, UART_BUF.as_ptr() as u32);
             core::ptr::write_volatile(TXD_MAXCNT, len as u32);
-            
-            // Start transmission
             core::ptr::write_volatile(TASKS_STARTTX, 1);
             
-            // Wait for completion
             timeout = 100_000;
             while core::ptr::read_volatile(EVENTS_ENDTX) == 0 && timeout > 0 {
                 cortex_m::asm::nop();
                 timeout -= 1;
             }
             
-            // Stop TX
             core::ptr::write_volatile(TASKS_STOPTX, 1);
             
-            // Small delay between writes
             for _ in 0..10_000 {
                 cortex_m::asm::nop();
             }
@@ -200,7 +154,6 @@ impl Nrf52840IO {
         }
         
         self.debug_write(unsafe { core::str::from_utf8_unchecked(&buf[..10]) });
-        self.debug_write("\r\n");
         
     }
 }
@@ -232,5 +185,6 @@ impl BootloaderIO for Nrf52840IO {
 
     fn format(&self, value: usize, buf: &mut [u8; 32]) {
         self.format_hex(value, buf);
+        self.debug_write("\r\n");
     }
 }

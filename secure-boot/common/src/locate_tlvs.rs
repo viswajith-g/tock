@@ -51,7 +51,7 @@ pub fn scan_for_potential_kernels<IO: BootloaderIO>(
 ) -> Result<[Option<PotentialKernel>; 8], BootError> {
     let mut kernels: [Option<PotentialKernel>; 8] = [None; 8];
     let mut kernel_count = 0;
-    let mut buf = [0u8; 32];
+    // let mut buf = [0u8; 32];
 
     // io.debug("scanning");
     // io.debug("scan_start:");
@@ -62,8 +62,8 @@ pub fn scan_for_potential_kernels<IO: BootloaderIO>(
     // Align to word boundary
     let mut current_addr = (scan_start + 3) & !3;
 
-    io.debug("current_address:");
-    io.format(current_addr, &mut buf);
+    // io.debug("current_address:");
+    // io.format(current_addr, &mut buf);
     
     while current_addr < scan_end && kernel_count < 8 {
         // Look for next TOCK sentinel
@@ -71,14 +71,14 @@ pub fn scan_for_potential_kernels<IO: BootloaderIO>(
             // Try to parse basic kernel info
             match parse_kernel_info(sentinel_addr, current_addr, io) {
                 Ok(kernel) => {
-                    io.debug("Found a kernel");
+                    // io.debug("Found a kernel");
                     kernels[kernel_count] = Some(kernel);
                     kernel_count += 1;
                     
                     // Skip past this kernel to continue scanning
                     current_addr = kernel.start_address + kernel.attributes_end;
-                    io.debug("current address:");
-                    io.format(current_addr, &mut buf);
+                    // io.debug("current address:");
+                    // io.format(current_addr, &mut buf);
                 }
                 Err(_) => {
                     // Couldn't parse this one, skip this sentinel
@@ -87,7 +87,7 @@ pub fn scan_for_potential_kernels<IO: BootloaderIO>(
             }
         } else {
             // No more sentinels found
-            io.debug("no more sentinels");
+            // io.debug("no more sentinels");
             break;
         }
     }
@@ -149,12 +149,12 @@ fn parse_kernel_info<IO: BootloaderIO>(
         .ok_or(BootError::InvalidKernelRegion)?;
     // let actual_kernel_start = ker
 
-    io.debug("attributes start:");
-    io.format(attributes_start, &mut buf);
-    io.debug("actual kernel start (calculated):");
-    io.format(actual_kernel_start, &mut buf);
-    io.debug("kernel size (from TLV):");
-    io.format(kernel_size, &mut buf);
+    // io.debug("attributes start:");
+    // io.format(attributes_start, &mut buf);
+    // io.debug("actual kernel start (calculated):");
+    // io.format(actual_kernel_start, &mut buf);
+    // io.debug("kernel size (from TLV):");
+    // io.format(kernel_size, &mut buf);
 
     // io.debug("Kernel start and size:");
     // io.format(kernel_start, &mut buf);
@@ -166,7 +166,7 @@ fn parse_kernel_info<IO: BootloaderIO>(
         return Err(BootError::InvalidKernelRegion);
     }
 
-    io.debug("kernel start sanity check passed");
+    // io.debug("kernel start sanity check passed");
 
     Ok(PotentialKernel {
         start_address: actual_kernel_start,
@@ -214,8 +214,8 @@ fn scan_tlvs_backward<IO: BootloaderIO>(sentinel_address: usize, io: &IO) -> Res
         let tlv_type = u16::from_le_bytes([header[0], header[1]]);
         let tlv_len = u16::from_le_bytes([header[2], header[3]]) as usize;
 
-        io.debug("TLV Length");
-        io.format(tlv_len, &mut buf);
+        // io.debug("TLV Length");
+        // io.format(tlv_len, &mut buf);
 
         if !VALID_TLV_TYPES.contains(&tlv_type) {
             // Hit garbage data - we've gone past the start
@@ -236,79 +236,16 @@ fn scan_tlvs_backward<IO: BootloaderIO>(sentinel_address: usize, io: &IO) -> Res
         // Check if this is the signature TLV (type 0x0105)
         // If so, we've reached the start of attributes
         if tlv_type == 0x0104 {
-            io.debug("found start addr of attributes");
-            io.format(pos, &mut buf);
+            // io.debug("found start addr of attributes");
+            // io.format(pos, &mut buf);
 
-            io.debug("size of attributes:");
-            io.format(sentinel_address - pos, &mut buf);
+            // io.debug("size of attributes:");
+            // io.format(sentinel_address - pos, &mut buf);
             // pos -= 4 + tlv_len;
             return Ok(pos);
         }
     }
 }
-
-
-// /// Searches from app_start in reverse to find the "TOCK" sentinel
-// fn find_tock_sentinel(app_start: usize) -> Result<usize, BootError> {
-    
-//     // Assuming the sentinel will be within 512 bytes before app_start
-//     let search_start = app_start.saturating_sub(512);
-    
-//     // Search backwards, checking every 4-byte aligned address
-//     let mut addr = app_start - 4;
-//     while addr >= search_start {
-//         let bytes = unsafe { 
-//             core::slice::from_raw_parts(addr as *const u8, 4) 
-//         };
-        
-//         if bytes == TOCK {
-//             return Ok(addr);
-//         }
-        
-//         if addr < 4 {
-//             break;
-//         }
-//         addr -= 4;
-//     }
-    
-//     Err(BootError::SentinelNotFound)
-// }
-
-// /// Scan TLVs backwards from sentinel to find start of attributes
-// fn scan_tlvs(sentinel_address: usize) -> Result<usize, BootError> {
-//     // Layout: [... TLVs ...] [Version/Reserved] [TOCK]
-//     // After finding TOCK, skip it to get to the end of the TLV chain
-//     let mut pos = sentinel_address;
-    
-//     // Skip TOCK pos is at start of Version/Reserved, 
-//     // which is the end of the TLV chain
-//     if pos < 4 {
-//         return Err(BootError::InvalidTLV);
-//     }
-//     pos -= 4;
-    
-//     // Walk backwards through TLVs
-//     for _ in 0..16 {  // Assuming a max of 16 TLVs
-//         if pos < 8 {
-//             break; // Reached beginning (last TLV)
-//         }
-        
-//         // Read TLV tail: [Type: 2 bytes][Length: 2 bytes]
-//         let tail = unsafe { core::slice::from_raw_parts((pos - 4) as *const u8, 4) };
-//         let _tlv_type = u16::from_le_bytes([tail[0], tail[1]]);
-//         let tlv_len = u16::from_le_bytes([tail[2], tail[3]]) as usize;
-        
-//         // Sanity check
-//         if tlv_len > 1024 || pos < (4 + tlv_len) {
-//             return Err(BootError::InvalidTLV);
-//         }
-        
-//         // Move to start of this TLV's value
-//         pos -= 4 + tlv_len;
-//     }
-    
-//     Ok(pos)
-// }
 
 #[cfg(test)]
 mod tests {

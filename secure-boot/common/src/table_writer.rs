@@ -4,105 +4,95 @@
 
 //! Discovery Table Flash Writer
 
-use crate::binary_discovery_table::{BinariesDiscoveryTable, BinaryEntry, BdtHeader};
+use crate::binary_discovery_table::{
+    BinariesDiscoveryTable, BdtHeader, BinaryEntry, MAX_KERNEL_ENTRIES, BDT_MAGIC, BDT_SIZE, BDT_ADDR,
+};
 use crate::error::BootError;
 use crate::flash_hal::FlashHal;
 
-/// Write BDT to flash at 0x8000
+/// Write BDT to flash at the defined BDT page.
+/// - Builds a fresh header
+/// - Writes kernel entries (bootloader-owned)
+/// - Leaves app section untouched (kernel-owned)
 pub fn write_bdt_to_flash(
     kernel_entries: &[BinaryEntry],
     kernel_count: usize,
 ) -> Result<(), BootError> {
-    // Build BDT in RAM
-    let mut bdt_buffer = [0u8; BinariesDiscoveryTable::SIZE];
+    if kernel_count > MAX_KERNEL_ENTRIES {
+        return Err(BootError::InvalidBDT);
+    }
+
+    // Build BDT image in RAM
+    let mut bdt_buffer = [0xFFu8; BDT_SIZE];
     build_bdt_in_buffer(&mut bdt_buffer, kernel_entries, kernel_count)?;
-    
-    // Erase BDT flash page
-    FlashHal::erase_page(BinariesDiscoveryTable::ADDRESS)?;
-    
-    // Write BDT to flash
-    FlashHal::write_buffer(BinariesDiscoveryTable::ADDRESS, &bdt_buffer)?;
-    
+
+    // Erase the BDT page
+    FlashHal::erase_page(BDT_ADDR)?;
+
+    // Program the BDT page
+    FlashHal::write_buffer(BDT_ADDR, &bdt_buffer)?;
+
     Ok(())
 }
 
-/// Build BDT in RAM buffer
+/// Build the BDT image into `buffer` (expects size == BDT_SIZE).
+/// Layout:
+///   0x0000 .. 0x000F : Header (16 B)
+///   0x0010 ..        : Kernel entries (16 B each, `kernel_count`)
+///   ...              : Remaining bytes left as 0xFF (app section)
 fn build_bdt_in_buffer(
     buffer: &mut [u8],
     kernel_entries: &[BinaryEntry],
     kernel_count: usize,
 ) -> Result<(), BootError> {
-    buffer.fill(0);
-    
-    let mut offset = 0;
-    
-    // Build header
+    if buffer.len() != BDT_SIZE {
+        return Err(BootError::InvalidBDT);
+    }
+    if kernel_count > MAX_KERNEL_ENTRIES || kernel_entries.len() < kernel_count {
+        return Err(BootError::InvalidBDT);
+    }
+
+    // Make sure we start from an erased image (1s). Flash writes are 1->0.
+    buffer.fill(0xFF);
+
+    // Header
     let header = BdtHeader {
-        magic: *b"BDTS",
+        magic: BDT_MAGIC,
         kernel_count: kernel_count as u16,
         app_count: 0,
-        reserved: [0; 2],
-        checksum: 0,
+        reserved: [0u8; 8],
     };
-    
-    // Write header (without checksum)
-    offset += write_header(&mut buffer[offset..], &header);
-    
-    // Write kernel entries
-    for entry in &kernel_entries[..kernel_count] {
+    let mut offset = write_header(buffer, &header);
+
+    // Kernel entries (bootloader-owned region)
+    for entry in kernel_entries.iter().take(kernel_count) {
+        // Serialize entry directly after previous
         offset += write_entry(&mut buffer[offset..], entry);
     }
-    
-    // Compute and write checksum
-    let checksum = compute_bdt_checksum(buffer);
-    buffer[12..16].copy_from_slice(&checksum.to_le_bytes());
-    
+
+    // Leave the rest of the page (including app entries) as 0xFF.
     Ok(())
 }
 
-fn write_header(buffer: &mut [u8], header: &BdtHeader) -> usize {
-    buffer[0..4].copy_from_slice(&header.magic);
-    buffer[4..6].copy_from_slice(&header.kernel_count.to_le_bytes());
-    buffer[6..8].copy_from_slice(&header.app_count.to_le_bytes());
-    buffer[8..10].copy_from_slice(&header.reserved);
+#[inline(always)]
+fn write_header(buf: &mut [u8], header: &BdtHeader) -> usize {
+    // BdtHeader is exactly 16 bytes in the new format.
+    // Layout: magic[4] | kernel_count[2] | app_count[2] | reserved[8]
+    buf[0..4].copy_from_slice(&header.magic);
+    buf[4..6].copy_from_slice(&header.kernel_count.to_le_bytes());
+    buf[6..8].copy_from_slice(&header.app_count.to_le_bytes());
+    buf[8..16].copy_from_slice(&header.reserved);
     16
 }
 
-fn write_entry(buffer: &mut [u8], entry: &BinaryEntry) -> usize {
-    buffer[0..4].copy_from_slice(&entry.start_address.to_le_bytes());
-    buffer[4..8].copy_from_slice(&entry.size.to_le_bytes());
-    buffer[8..11].copy_from_slice(&entry.version);
-    buffer[11] = entry.binary_type;
-    buffer[12..16].copy_from_slice(&entry.reserved);
+#[inline(always)]
+fn write_entry(buf: &mut [u8], entry: &BinaryEntry) -> usize {
+    // BinaryEntry is exactly 16 bytes.
+    // Layout: start[4] | size[4] | version[3] | type[1] | reserved[4]
+    buf[0..4].copy_from_slice(&entry.start_address.to_le_bytes());
+    buf[4..8].copy_from_slice(&entry.size.to_le_bytes());
+    buf[8..11].copy_from_slice(&entry.version);
+    buf[11] = entry.binary_type;
+    buf[12..16].copy_from_slice(&entry.reserved);
     16
-}
-
-fn compute_bdt_checksum(buffer: &[u8]) -> u32 {
-    let mut crc = crc32_init();
-    crc = crc32_update(crc, &buffer[0..12]); // Header without checksum
-    crc = crc32_update(crc, &buffer[16..]); // Rest of BDT
-    crc32_finalize(crc)
-}
-
-// CRC32 functions
-fn crc32_init() -> u32 {
-    0xFFFF_FFFF
-}
-
-fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xEDB8_8320;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    crc
-}
-
-fn crc32_finalize(crc: u32) -> u32 {
-    !crc
 }

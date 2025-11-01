@@ -264,6 +264,9 @@ SECTIONS
          */
         PROVIDE(__global_pointer$ = . + 0x800);
 
+        /* We also need to relocate the GOT during boot */
+        *(.got .got.*)
+
         *(.ramfunc .ramfunc.*);
         *(.sdata .sdata.* .gnu.linkonce.r.*)
         *(.data .data.*);
@@ -327,7 +330,7 @@ SECTIONS
         *(.app_memory)
     } > ram
     /* _eappmem = ORIGIN(ram) + LENGTH(ram); */
-    _eappmem = ORIGIN(ram) + LENGTH(ram) - 0x100;
+    _eappmem = ORIGIN(ram) + LENGTH(ram);
 
 
     /* Place attributes at the end of the kernel ROM region. These will be used
@@ -419,8 +422,8 @@ SECTIONS
 ASSERT(_tock_attr_reloc_header - _tock_attr_reloc_start >= 8, "Reloc TLV too small");
 
 /* Stub symbols for apps (apps section removed, BDT manages placement) */
-_sapps = LOADADDR(.attributes) + SIZEOF(.attributes);
-_eapps = _sapps;
+_sapps = 0x9000;
+_eapps = _sapps + LENGTH(rom);
 
 /* LOADADDR: Return the absolute load address of the named section. This is
  * normally the same as ADDR, but it may be different if the AT keyword is used
@@ -428,7 +431,7 @@ _eapps = _sapps;
  */
 _sattributes = LOADADDR(.attributes);
 _eattributes = LOADADDR(.attributes) + SIZEOF(.attributes);
-_erom = ORIGIN(rom) + LENGTH(rom);
+_erom = _eapps;
 
 /* Set the ENTRY attribute to the start of the text section, _stext. For RISC-V
  * this should point to `.riscv.start`, which contains the `_start` symbol. For

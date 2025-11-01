@@ -16,9 +16,9 @@ pub fn parse_attributes<IO: BootloaderIO>(
 ) -> Result<KernelAttributes, BootError> {
     // Calculate the full attributes section size
     let attr_size = attributes_end - attributes_start;
-    let mut buf = [0u8; 32];
-    io.debug("attr size: ");
-    io.format(attr_size, &mut buf);
+    // let mut buf = [0u8; 32];
+    // io.debug("attr size: ");
+    // io.format(attr_size, &mut buf);
     
     if attr_size < 8 {
         return Err(BootError::InvalidTLV);

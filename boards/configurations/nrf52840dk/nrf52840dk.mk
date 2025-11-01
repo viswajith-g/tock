@@ -65,27 +65,9 @@ flash-openocd: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
 
 # J-Link config
 JLINK_EXE    ?= JLinkExe
-JLINK_DEVICE ?= nRF52840_xxAA
+JLINK_DEVICE ?= NRF52840_xxAA
 JLINK_IF     ?= SWD
 JLINK_SPEED  ?= 4000
-
-# Flash the kernel via J-Link (no tockloader)
-# .PHONY: flash-jlink
-# flash-jlink: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
-# 	@echo "Flashing $(PLATFORM) (ELF) via J-Link..."
-# 	@set -e; \
-# 	SCRIPT="$$(mktemp /tmp/jlink_XXXXXX.jlink)"; \
-# 	{ \
-# 	  echo "SetBatchMode 1"; \
-# 	  echo "connect"; \
-# 	  echo "r"; \
-# 	  echo "loadbin $< $(KERNEL_ADDRESS)"; \
-# 	  echo "SetResetType 0"; \
-# 	  echo "reset"; \
-# 	  echo "q"; \
-# 	} > $$SCRIPT; \
-# 	$(JLINK_EXE) -device $(JLINK_DEVICE) -if $(JLINK_IF) -speed $(JLINK_SPEED) -NoGui 1 -CommandFile $$SCRIPT; \
-# 	rm -f $$SCRIPT
 
 .PHONY: flash-jlink
 flash-jlink: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
@@ -95,21 +77,8 @@ flash-jlink: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
 	echo "loadbin $< $(KERNEL_ADDRESS)" >> $$SCRIPT; \
 	echo "verifybin $< $(KERNEL_ADDRESS)" >> $$SCRIPT; \
 	echo "r" >> $$SCRIPT; \
-	echo "qc" >> $$SCRIPT; \
+	echo "g" >> $$SCRIPT; \
+	echo "q" >> $$SCRIPT; \
 	cat $$SCRIPT; \
 	$(JLINK_EXE) -device $(JLINK_DEVICE) -if $(JLINK_IF) -speed $(JLINK_SPEED) -autoconnect 1 -CommandFile $$SCRIPT || true; \
 	rm -f $$SCRIPT
-
-# .PHONY: flash-jlink
-# flash-jlink: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
-# 	mktemp /tmp/flash.jlink
-# 	@echo "Flashing kernel to address $(KERNEL_ADDRESS)..."
-# 	@echo "r" > /tmp/flash.jlink
-# 	@echo "h" >> /tmp/flash.jlink
-# 	@echo "loadbin $< $(KERNEL_ADDRESS)" >> /tmp/flash.jlink
-# 	@echo "r" >> /tmp/flash.jlink
-# 	@echo "g" >> /tmp/flash.jlink
-# 	@echo "q" >> /tmp/flash.jlink
-# 	$(JLINK_EXE) -device $(JLINK_DEVICE) -if $(JLINK_IF) -speed $(JLINK_SPEED) -autoconnect 1 -CommanderScript /tmp/flash.jlink
-# 	@rm -f /tmp/flash.jlink
-# 	@echo "Flash complete!"

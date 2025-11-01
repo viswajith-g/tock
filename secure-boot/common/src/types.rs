@@ -5,7 +5,7 @@
 //! Common types used throughout the secure boot process
 
 /// Represents the location and boundaries of the kernel in flash
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct KernelRegion {
     /// Start address of kernel code in flash
     pub start: usize,
@@ -21,7 +21,7 @@ pub struct KernelRegion {
 }
 
 /// ECDSA P-256 signature attribute (TLV type 0x0105)
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct SignatureAttribute {
     /// ECDSA signature r component (32 bytes)
     pub r: [u8; 32],
@@ -37,7 +37,7 @@ pub struct SignatureAttribute {
 }
 
 /// Kernel version information (from TLV type 0x0103)
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct KernelVersion {
     pub major: u16,
     pub minor: u16,
@@ -63,7 +63,7 @@ pub struct KernelAttributes {
 }
 
 /// Relocation information from TLV
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct RelocationInfo {
     pub link_address: u32,       // Address kernel was linked for
     pub num_entries: u32,        // Number of relocation entries
@@ -71,7 +71,7 @@ pub struct RelocationInfo {
 }
 
 /// Single relocation entry (matches kernel structure)
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct RelocationEntry {
     pub offset: u32,           // Offset from kernel start
     pub original_value: u32,   // Value before relocation
