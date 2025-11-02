@@ -15,42 +15,42 @@ mod panic;
 
 use config::Nrf52840Config;
 use io::Nrf52840IO;
-use secure_boot_common::{verify_and_boot, BootloaderIO, BoardConfig};
+use secure_boot_common::{verify_and_boot, BootloaderIO};
 use secure_boot_common::error::BootError;
 
-const LED1_PIN: u32 = 13; // P0.13
-const LED2_PIN: u32 = 14; // P0.14
-const LED3_PIN: u32 = 15; // P0.15
-const LED4_PIN: u32 = 16; // P0.16
+// const LED1_PIN: u32 = 13; // P0.13
+// const LED2_PIN: u32 = 14; // P0.14
+// const LED3_PIN: u32 = 15; // P0.15
+// const LED4_PIN: u32 = 16; // P0.16
 
 // Include the startup assembly code
 core::arch::global_asm!(include_str!("startup.s"));
 
-/// Minimal core::fmt::Write adapter
-struct BufferWriter<'a> {
-    buf: &'a mut [u8],
-    pos: usize,
-}
+// /// Minimal core::fmt::Write adapter
+// struct BufferWriter<'a> {
+//     buf: &'a mut [u8],
+//     pos: usize,
+// }
 
-impl<'a> BufferWriter<'a> {
-    fn new(buf: &'a mut [u8]) -> Self {
-        Self { buf, pos: 0 }
-    }
+// impl<'a> BufferWriter<'a> {
+//     fn new(buf: &'a mut [u8]) -> Self {
+//         Self { buf, pos: 0 }
+//     }
 
-    fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("")
-    }
-}
+//     fn as_str(&self) -> &str {
+//         core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("")
+//     }
+// }
 
-impl<'a> core::fmt::Write for BufferWriter<'a> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let bytes = s.as_bytes();
-        let len = bytes.len().min(self.buf.len().saturating_sub(self.pos));
-        self.buf[self.pos..self.pos + len].copy_from_slice(&bytes[..len]);
-        self.pos += len;
-        Ok(())
-    }
-}
+// impl<'a> core::fmt::Write for BufferWriter<'a> {
+//     fn write_str(&mut self, s: &str) -> core::fmt::Result {
+//         let bytes = s.as_bytes();
+//         let len = bytes.len().min(self.buf.len().saturating_sub(self.pos));
+//         self.buf[self.pos..self.pos + len].copy_from_slice(&bytes[..len]);
+//         self.pos += len;
+//         Ok(())
+//     }
+// }
 
 // #[inline(always)]
 // fn read_reset_reason() -> u32 {
@@ -116,7 +116,7 @@ pub extern "C" fn main() -> ! {
         }
         Err(error) => {
             // Debug: Blink LED2 to show specific error code
-            let blink_count = match error {
+            let _blink_count = match error {
                 BootError::SentinelNotFound => 3,
                 BootError::InvalidTLV => 4,
                 BootError::InvalidSignature => 5,
@@ -171,9 +171,6 @@ unsafe fn jump_to_kernel<IO: BootloaderIO>(kernel_entry: usize, io: &IO) -> ! {
     let msp = core::ptr::read_volatile(vt);
     let reset = core::ptr::read_volatile(vt.add(1));
 
-    let vt = kernel_entry as *const u32;
-    let msp   = core::ptr::read_volatile(vt);
-    let reset = core::ptr::read_volatile(vt.add(1));
     // io.debug("VT[0] MSP=");   io.format(msp as usize, &mut buf);
     // io.debug("VT[1] Reset="); io.format(reset as usize, &mut buf);
 

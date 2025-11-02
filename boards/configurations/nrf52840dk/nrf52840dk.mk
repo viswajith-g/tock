@@ -8,36 +8,20 @@
 SIGN_KERNEL_DIR = $(TOCK_ROOT_DIRECTORY)tools/build/sign-kernel
 SIGN_KERNEL = $(SIGN_KERNEL_DIR)/../../target/release/sign-kernel
 
-# Path to relocation tool
-KERNEL_RELOC_DIR = $(TOCK_ROOT_DIRECTORY)tools/build/kernel-reloc
-KERNEL_RELOC = $(KERNEL_RELOC_DIR)/../../target/release/kernel-reloc
-
 # Build signing tool if it doesn't exist
 $(SIGN_KERNEL):
-	@echo "Building kernel signing tool"
+	@echo "Building signing tool"
 	cd $(SIGN_KERNEL_DIR) && cargo build --release
 
-# Build relocation tool if needed
-$(KERNEL_RELOC):
-	@echo "Building kernel relocation emebd tool"
-	cd $(KERNEL_RELOC_DIR) && cargo build --release
-
-# Override the binary creation to include signing and relocations
-# Flow: Build ELF → Sign → Embed Relocations → Create Binary
-$(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin: \
-    $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) \
-    $(SIGN_KERNEL) \
-    $(KERNEL_RELOC)
-	@echo "Adding Kernel Relocation Parameters"
-	$(KERNEL_RELOC) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)
-	@echo "Signing Kernel"
+# Override the binary creation to include signing step
+# First build the ELF, then sign it, then create the bin
+$(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $(SIGN_KERNEL)
+	@echo "Signing kernel ELF"
 	$(SIGN_KERNEL) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)
-	@echo "Creating binary"
-	$(OBJCOPY) --output-target=binary --strip-all --remove-section .apps $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $@
+	@echo "Creating binary from signed ELF"
+	$(OBJCOPY) --output-target=binary --strip-sections --strip-all --remove-section .apps $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $@
 	@$(SIZE) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)
 	@sha256sum $@
-
-
 TOCKLOADER=tockloader
 
 # Where in the SAM4L flash to load the kernel with `tockloader`
@@ -71,7 +55,7 @@ JLINK_SPEED  ?= 4000
 
 .PHONY: flash-jlink
 flash-jlink: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
-	@echo "Flashing $(PLATFORM) to $(KERNEL_ADDRESS)..."
+	@echo "Flashing $(PLATFORM) to $(KERNEL_ADDRESS)"
 	@SCRIPT=$$(mktemp /tmp/jlink_XXXXXX.jlink); \
 	echo "r" > $$SCRIPT; \
 	echo "loadbin $< $(KERNEL_ADDRESS)" >> $$SCRIPT; \

@@ -29,32 +29,32 @@ fn write_u32_le(dst: &mut [u8], val: u32) {
 pub fn relocate_kernel_in_place<IO: BootloaderIO>(
     kernel: &PotentialKernel,
     reloc_info: &RelocationInfo,
-    io: &IO,
+    _io: &IO,
 ) -> Result<(), BootError> {
     let kernel_base = kernel.start_address;
     let link_address = reloc_info.link_address as usize;
 
     // let mut buf = [0u8; 32];
-    // io.debug("Kernel relocator");
-    // io.debug("Kernel start address:");
-    // io.format(kernel_base, &mut buf);
-    // io.debug("Link start address:");
-    // io.format(link_address, &mut buf);
+    // _io.debug("Kernel relocator");
+    // _io.debug("Kernel start address:");
+    // _io.format(kernel_base, &mut buf);
+    // _io.debug("Link start address:");
+    // _io.format(link_address, &mut buf);
 
     if kernel_base == link_address {
-        // io.debug("already at link address");
+        // _io.debug("already at link address");
         return Ok(());
     }
 
     let offset = (kernel_base as i32) - (link_address as i32);
-    // io.debug("relocation offset:");
-    // io.format(offset as usize, &mut buf);
+    // _io.debug("relocation offset:");
+    // _io.format(offset as usize, &mut buf);
 
     // 1) Apply TLV relocations (skip vector table region for now)
-    apply_tlv_relocations(kernel_base, offset, reloc_info, io)?;
+    apply_tlv_relocations(kernel_base, offset, reloc_info, _io)?;
 
     // 2) Relocate vector table entries and set VTOR
-    relocate_vector_table(kernel_base, offset, io)?;
+    relocate_vector_table(kernel_base, offset, _io)?;
 
     Ok(())
 }
@@ -62,15 +62,14 @@ pub fn relocate_kernel_in_place<IO: BootloaderIO>(
 fn relocate_vector_table<IO: BootloaderIO>(
     kernel_base: usize,
     offset: i32,
-    io: &IO,
+    _io: &IO,
 ) -> Result<(), BootError> {
-    // io.debug("relocating vector table");
-    let mut buf = [0u8; 32];
+    // _io.debug("relocating vector table");
+    // let mut buf = [0u8; 32];
 
     // Read the first page containing the VT
     let mut page = [0u8; PAGE_SIZE];
     read_page(kernel_base, &mut page)?;
-    let before_reset = read_u32_le(&page[4..8]); // VT[1] (Reset)
 
     let mut modified = false;
 
@@ -99,10 +98,9 @@ fn relocate_vector_table<IO: BootloaderIO>(
         // Verify/log VT[1] after
         let mut verify = [0u8; PAGE_SIZE];
         read_page(kernel_base, &mut verify)?;
-        let after_reset = read_u32_le(&verify[4..8]);
-        // io.debug("VT[1] before/after:");
-        // io.format(before_reset as usize, &mut buf);
-        // io.format(after_reset as usize, &mut buf);
+        // _io.debug("VT[1] before/after:");
+        // _io.format(before_reset as usize, &mut buf);
+        // _io.format(after_reset as usize, &mut buf);
     }
 
     // Point VTOR at the relocated VT base so faults/IRQs read the right table
@@ -118,9 +116,9 @@ fn apply_tlv_relocations<IO: BootloaderIO>(
     kernel_base: usize,
     offset: i32,
     reloc_info: &RelocationInfo,
-    io: &IO,
+    _io: &IO,
 ) -> Result<(), BootError> {
-    // io.debug("applying TLV relocations");
+    // _io.debug("applying TLV relocations");
 
     // We treat the first 100 words (including MSP and handlers) as the VT region
     // and skip TLV-driven patches there; VT is handled separately above.
@@ -133,8 +131,8 @@ fn apply_tlv_relocations<IO: BootloaderIO>(
     let mut flash_page_base = 0;
 
     // let mut buf = [0u8; 32];
-    // io.debug("total number of relocation entries:");
-    // io.format(reloc_info.num_entries as usize, &mut buf);
+    // _io.debug("total number of relocation entries:");
+    // _io.format(reloc_info.num_entries as usize, &mut buf);
 
     for i in 0..reloc_info.num_entries {
         let entry_addr = reloc_info.entries_start + (i as usize * RelocationEntry::SIZE);
@@ -186,12 +184,12 @@ fn apply_tlv_relocations<IO: BootloaderIO>(
         let want = ((cur_b as i32 + offset) as u32) | cur_t;
 
         if cur != want {
-            // io.debug("reloc patch @");
-            // io.format(patch_addr, &mut [0u8; 32]);
-            // io.debug(" orig=");
-            // io.format(cur as usize, &mut [0u8; 32]);
-            // io.debug(" new=");
-            // io.format(want as usize, &mut [0u8; 32]);
+            // _io.debug("reloc patch @");
+            // _io.format(patch_addr, &mut [0u8; 32]);
+            // _io.debug(" orig=");
+            // _io.format(cur as usize, &mut [0u8; 32]);
+            // _io.debug(" new=");
+            // _io.format(want as usize, &mut [0u8; 32]);
 
             write_u32_le(&mut page_buffer[off_in_page..off_in_page + 4], want);
             page_modified = true;

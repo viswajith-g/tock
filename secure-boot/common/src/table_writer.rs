@@ -5,7 +5,7 @@
 //! Discovery Table Flash Writer
 
 use crate::binary_discovery_table::{
-    BinariesDiscoveryTable, BdtHeader, BinaryEntry, MAX_KERNEL_ENTRIES, BDT_MAGIC, BDT_SIZE, BDT_ADDR,
+    BdtHeader, BinaryEntry, MAX_KERNEL_ENTRIES, BDT_MAGIC, BDT_SIZE, BDT_ADDR,
 };
 use crate::error::BootError;
 use crate::flash_hal::FlashHal;

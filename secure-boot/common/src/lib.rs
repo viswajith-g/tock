@@ -39,7 +39,7 @@ pub trait BootloaderIO {
     /// Optional: Blink a board LED `count` times
     fn debug_blink(&self, _pin: u32, _count: usize) {}
 
-    fn format(&self, value: usize, buf: &mut [u8; 32]) {}
+    fn format(&self, _value: usize, _buf: &mut [u8; 32]) {}
 }
 
 /// Board-specific configuration that must be provided
@@ -82,17 +82,17 @@ struct KernelCandidate {
 }
 
 pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
-    io: &IO,
+    _io: &IO,
 ) -> Result<(usize, usize), BootError> {
     // let mut buf = [0u8; 32];
 
-    // io.debug("checking for potential candidates");
+    // _io.debug("checking for potential candidates");
     // Scan flash for all kernels
     // let discovered_kernels = locate_tlvs::scan_for_all_kernels::<C>(
     let potential_kernels = locate_tlvs::scan_for_potential_kernels(
         C::AVAILABLE_FLASH_START,
         C::AVAILABLE_FLASH_END,
-        io,
+        _io,
     )?;
     
     
@@ -103,24 +103,24 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     for maybe_kernel in &potential_kernels {
         if let Some(kernel) = maybe_kernel {
             // Just parse attributes to get version (no verification)
-            if let Ok(version) = extract_version::<C, IO>(&kernel, io) {
+            if let Ok(version) = extract_version::<C, IO>(&kernel, _io) {
                 candidates[candidate_count] = Some(KernelCandidate {
                     kernel: *kernel,
                     version,
                 });
                 candidate_count += 1;
-                // io.debug("candidate count:");
-                // io.format(candidate_count, &mut buf);
+                // _io.debug("candidate count:");
+                // _io.format(candidate_count, &mut buf);
             }
         }
     }
     
     if candidate_count == 0 {
-        // io.debug("No candidates found");
+        // _io.debug("No candidates found");
         return Err(BootError::NoValidKernel);
     }
 
-    // io.debug("sorting candidates by version");
+    // _io.debug("sorting candidates by version");
     
     // Sort candidates by version
     sort_candidates_by_version(&mut candidates, candidate_count);
@@ -132,10 +132,10 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     for i in 0..candidate_count {
         if let Some(candidate) = &candidates[i] {
             // Try to verify a single kernel's signature
-            // io.debug("verifying single kernel");
-            if verify_single_kernel::<C, IO>(io, &candidate.kernel).is_ok() {
+            // _io.debug("verifying single kernel");
+            if verify_single_kernel::<C, IO>(_io, &candidate.kernel).is_ok() {
                 // Verification succeeded. Use this kernel
-                // io.debug("verification successful");
+                // _io.debug("verification successful");
                 selected_kernel = Some(candidate.kernel);
                 // selected_version = Some(candidate.version);
                 break;
@@ -148,34 +148,34 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     // let selected_version = selected_version.unwrap();
 
     // Check if kernel requires to be relocated
-    let attributes = attributes_parser::parse_attributes(
+    let _ = attributes_parser::parse_attributes(
         selected_kernel.attributes_start,
         selected_kernel.attributes_end,
-        io
+        _io
     )?;
     
-    if let Some(reloc_info) = attributes.relocation {
-        let link_addr = reloc_info.link_address as usize;
-        let current_addr = selected_kernel.start_address;
+    // if let Some(reloc_info) = attributes.relocation {
+    //     let link_addr = reloc_info.link_address as usize;
+    //     let current_addr = selected_kernel.start_address;
         
-        if current_addr != link_addr {
-            // Kernel needs relocation!
-            // io.debug("Kernel requires relocation");
+    //     if current_addr != link_addr {
+    //         // Kernel needs relocation!
+    //         // _io.debug("Kernel requires relocation");
             
-            kernel_relocator::relocate_kernel_in_place(
-                &selected_kernel,
-                &reloc_info,
-                io,
-            )?;
+    //         kernel_relocator::relocate_kernel_in_place(
+    //             &selected_kernel,
+    //             &reloc_info,
+    //             _io,
+    //         )?;
             
-            // io.debug("Relocation complete");
-        } else {
-            // io.debug("No relocation needed");
-        }
-    } else {
-        // No relocation TLV found - kernel might be old format or doesn't need it
-        // io.debug("No relocation TLV found (old kernel?)");
-    }
+    //         // _io.debug("Relocation complete");
+    //     } else {
+    //         // _io.debug("No relocation needed");
+    //     }
+    // } else {
+    //     // No relocation TLV found - kernel might be old format or doesn't need it
+    //     // _io.debug("No relocation TLV found (old kernel?)");
+    // }
     
     // Build discovery table with all found kernels
     let mut kernel_entries = [BinaryEntry::empty(); 8];
@@ -199,10 +199,10 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     table_writer::write_bdt_to_flash(&kernel_entries, candidate_count)?;
 
     // Signal success and return entry point
-    // io.signal_success();
+    // _io.signal_success();
 
-    // io.debug("selected kernel start address: ");
-    // io.format(selected_kernel.start_address, &mut buf);
+    // _io.debug("selected kernel start address: ");
+    // _io.format(selected_kernel.start_address, &mut buf);
     
     Ok((selected_kernel.start_address, selected_kernel.attributes_end))
 }
@@ -210,22 +210,22 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
 // Extract version from 
 fn extract_version<C: BoardConfig, IO: BootloaderIO>(
     kernel: &locate_tlvs::PotentialKernel,
-    io: &IO,
+    _io: &IO,
 ) -> Result<KernelVersion, BootError> {
-    let mut buf = [0u8; 32];
+    // let mut buf = [0u8; 32];
     // Parse attributes
-    // io.debug("Parsing Kernel Attributes");
+    // _io.debug("Parsing Kernel Attributes");
 
-    // io.debug("kernel attributes start: ");
-    // io.format(kernel.attributes_start as usize, &mut buf);
+    // _io.debug("kernel attributes start: ");
+    // _io.format(kernel.attributes_start as usize, &mut buf);
 
-    // io.debug("kernel attributes end: ");
-    // io.format(kernel.attributes_end as usize, &mut buf);
+    // _io.debug("kernel attributes end: ");
+    // _io.format(kernel.attributes_end as usize, &mut buf);
 
     let attributes = attributes_parser::parse_attributes(
         kernel.attributes_start,
         kernel.attributes_end,
-        io,
+        _io,
     )?;
 
     // Get version
@@ -240,34 +240,34 @@ fn extract_version<C: BoardConfig, IO: BootloaderIO>(
 }
 
 pub fn verify_single_kernel<C: BoardConfig, IO: BootloaderIO>(
-    io: &IO,
+    _io: &IO,
     kernel: &locate_tlvs::PotentialKernel,
 ) -> Result<(), BootError> {
     // Verify and Boot entered
-    // io.debug_blink(15, 1);
+    // _io.debug_blink(15, 1);
 
-    let mut buf = [0u8; 32];
+    // let mut buf = [0u8; 32];
 
     // Locating kernel/attributes_end
-    // io.debug_blink(15, 2);
+    // _io.debug_blink(15, 2);
     // let region_found = locate_tlvs::define_kernel_region::<C>()?;
 
     // 3: Parsing attributes
-    // io.debug_blink(15, 3);
+    // _io.debug_blink(15, 3);
     let attributes = attributes_parser::parse_attributes(
         kernel.attributes_start,
         kernel.attributes_end,
-        io,
+        _io,
     )?;
 
     // Finding signature
-    // io.debug_blink(15, 4);
-    // io.debug("checking for signature");
+    // _io.debug_blink(15, 4);
+    // _io.debug("checking for signature");
     let signature = attributes.signature.ok_or(BootError::SignatureMissing)?;
-    // io.debug("signature tlv present");
+    // _io.debug("signature tlv present");
 
     // // Check version
-    // // io.debug_blink(15, 5);
+    // // _io.debug_blink(15, 5);
     // if let Some(version) = attributes.kernel_version {
     //     if version < C::MIN_KERNEL_VERSION {
     //         return Err(BootError::VersionTooOld);
@@ -275,14 +275,14 @@ pub fn verify_single_kernel<C: BoardConfig, IO: BootloaderIO>(
     // }
 
     // // Check valid flash TLV
-    // // io.debug_blink(15, 6);
+    // // _io.debug_blink(15, 6);
     // let _ = attributes.kernel_flash.ok_or(BootError::InvalidTLV)?;
     
 
     // let (flash_start, _flash_len) = attributes.kernel_flash.ok_or(BootError::InvalidTLV)?;
 
-    // io.debug("flash start:");
-    // io.format(flash_start as usize, &mut buf);
+    // _io.debug("flash start:");
+    // _io.format(flash_start as usize, &mut buf);
 
     let region = KernelRegion {
         start: kernel.start_address,
@@ -291,28 +291,28 @@ pub fn verify_single_kernel<C: BoardConfig, IO: BootloaderIO>(
         attributes_start: kernel.attributes_start,
     };
 
-    // io.debug("Hash parameters:");
-    // io.debug("region.start:");
-    // io.format(region.start, &mut buf);
-    // io.debug("region.end:");
-    // io.format(region.end, &mut buf);
-    let (sig_start, sig_end) = signature.location;
-    // io.debug("sig flash_addr:");
-    // io.format(sig_start, &mut buf);
+    // _io.debug("Hash parameters:");
+    // _io.debug("region.start:");
+    // _io.format(region.start, &mut buf);
+    // _io.debug("region.end:");
+    // _io.format(region.end, &mut buf);
+    // let (sig_start, sig_end) = signature.location;
+    // _io.debug("sig flash_addr:");
+    // _io.format(sig_start, &mut buf);
 
     // Compute hash
-    // io.debug_blink(15, 7);
+    // _io.debug_blink(15, 7);
     let hash = compute_hash::compute_kernel_hash(
         &region,
         &signature,
         kernel.attributes_end,
     )?;
 
-    // io.debug("computed hash");
+    // _io.debug("computed hash");
 
     // Verify signature
-    // io.debug_blink(15, 8);
-    signature_verifier::verify_signature::<C, IO>(&hash, &signature, io)?;
+    // _io.debug_blink(15, 8);
+    signature_verifier::verify_signature::<C, IO>(&hash, &signature, _io)?;
 
     // Verification success
     Ok(())

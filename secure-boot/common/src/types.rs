@@ -46,11 +46,8 @@ pub struct KernelVersion {
 
 /// Parsed kernel attributes from the attributes section
 pub struct KernelAttributes {
-    /// Kernel signature (type 0x0105)
+    /// Kernel signature (type 0x0104)
     pub signature: Option<SignatureAttribute>,
-
-    /// Kernel relocation symols (type 0x0104)
-    pub relocation: Option<RelocationInfo>,
     
     /// Kernel version (type 0x0103)
     pub kernel_version: Option<KernelVersion>,

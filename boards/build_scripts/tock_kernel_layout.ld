@@ -354,15 +354,15 @@ SECTIONS
         /* TLV: Kernel Relocations */
         /* Relocation TLV (VALUE) */
         
-        _tock_attr_reloc_start = .;
-        KEEP(*(.tock.attr.kernel_relocation))
-        _tock_attr_reloc_value_end = .;
+        /* _tock_attr_reloc_start = .; */
+        /* KEEP(*(.tock.attr.kernel_relocation)) */
+        /* _tock_attr_reloc_value_end = .; */
 
         /* Relocation TLV */
-        _tock_attr_reloc_header = .;
-        SHORT(0x0104)   /* tlv_type: Kernel Relocations */
-        SHORT(_tock_attr_reloc_value_end - _tock_attr_reloc_start)
-        _tock_attr_reloc_end = .;
+        /* _tock_attr_reloc_header = .; */
+        /* SHORT(0x0104)   /* tlv_type: Kernel Relocations */
+        /* SHORT(_tock_attr_reloc_value_end - _tock_attr_reloc_start) */
+        /* _tock_attr_reloc_end = .; */
 
         /* TLV: Kernel Signature
          * This field specifies the signature of the kernel image. 
@@ -381,10 +381,12 @@ SECTIONS
          * This indicates the start address of the kernel flash and the size of
          * the kernel binary.
          */
-        LONG(ORIGIN(rom)) /* Address of start of kernel binary. */
-        LONG((LOADADDR(.relocate) + (_erelocate - _srelocate)) - ORIGIN(rom)) /* Length of kernel binary. */
+        LONG(ORIGIN(rom))
+        LONG(LOADADDR(.attributes) - ORIGIN(rom)) /* Kernel binary length */
         SHORT(0x0102) /* Type = Kernel Flash = 0x0102 */
         SHORT(8)      /* Length = 8 bytes */
+        ASSERT(ORIGIN(rom) + (LOADADDR(.attributes) - ORIGIN(rom)) == LOADADDR(.attributes),
+               "Kernel Flash TLV mismatch: start+len != attributes start");
 
         /* TLV: App Memory
          * This indicates the start address and size of RAM available for
@@ -420,7 +422,7 @@ SECTIONS
     }
 }
 /* Check to ensure the relocation values don't overflow the TLV */
-ASSERT(_tock_attr_reloc_header - _tock_attr_reloc_start >= 8, "Reloc TLV too small");
+/* ASSERT(_tock_attr_reloc_header - _tock_attr_reloc_start >= 8, "Reloc TLV too small"); */
 
 /* Stub symbols for apps (apps section removed, so this does not hold much meaning) */
 _sapps = 0x9000;
