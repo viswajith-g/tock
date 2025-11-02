@@ -9,8 +9,8 @@
 
 use core::cell::Cell;
 
-use crate::config;
-use crate::debug;
+// use crate::config;
+// use crate::debug;
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
 use crate::hil::nonvolatile_storage::{NonvolatileStorage, NonvolatileStorageClient};
 use crate::platform::chip::Chip;
@@ -561,48 +561,51 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
     fn finalize(&self) -> Result<(), ErrorCode> {
         match self.state.get() {
             State::AppWrite => {
-                if let Some(metadata) = self.process_metadata.get() {
-                    match metadata.padding_requirement {
-                        // If we decided we need to write a padding app before the new
-                        // app, we go ahead and do it.
-                        PaddingRequirement::PrePad | PaddingRequirement::PreAndPostPad => {
-                            // Calculate the distance between our app and the previous
-                            // app.
-                            let previous_app_end_addr = metadata.previous_app_end_addr;
-                            let pre_pad_length =
-                                metadata.new_app_start_addr - previous_app_end_addr;
-                            self.state.set(State::Load);
-                            let padding_result =
-                                self.write_padding_app(pre_pad_length, previous_app_end_addr);
-                            match padding_result {
-                                Ok(()) => {
-                                    if config::CONFIG.debug_load_processes {
-                                        debug!("Successfully writing prepadding app");
-                                    }
-                                    Ok(())
-                                }
-                                Err(_e) => {
-                                    // This means we were unable to write the padding
-                                    // app.
-                                    self.reset_process_loading_metadata();
-                                    Err(ErrorCode::FAIL)
-                                }
-                            }
-                        }
-                        // We should never reach here if we are not writing a prepad
-                        // app.
-                        PaddingRequirement::None | PaddingRequirement::PostPad => {
-                            if config::CONFIG.debug_load_processes {
-                                debug!("No PrePad app to write.");
-                            }
-                            self.state.set(State::Load);
-                            self.deferred_call.set();
-                            Ok(())
-                        }
-                    }
-                } else {
-                    Err(ErrorCode::INVAL)
-                }
+                // if let Some(metadata) = self.process_metadata.get() {
+                    // match metadata.padding_requirement {
+                    //     // If we decided we need to write a padding app before the new
+                    //     // app, we go ahead and do it.
+                    //     PaddingRequirement::PrePad | PaddingRequirement::PreAndPostPad => {
+                    //         // Calculate the distance between our app and the previous
+                    //         // app.
+                    //         let previous_app_end_addr = metadata.previous_app_end_addr;
+                    //         let pre_pad_length =
+                    //             metadata.new_app_start_addr - previous_app_end_addr;
+                    //         self.state.set(State::Load);
+                    //         let padding_result =
+                    //             self.write_padding_app(pre_pad_length, previous_app_end_addr);
+                    //         match padding_result {
+                    //             Ok(()) => {
+                    //                 if config::CONFIG.debug_load_processes {
+                    //                     debug!("Successfully writing prepadding app");
+                    //                 }
+                    //                 Ok(())
+                    //             }
+                    //             Err(_e) => {
+                    //                 // This means we were unable to write the padding
+                    //                 // app.
+                    //                 self.reset_process_loading_metadata();
+                    //                 Err(ErrorCode::FAIL)
+                    //             }
+                    //         }
+                    //     }
+                    //     // We should never reach here if we are not writing a prepad
+                    //     // app.
+                    //     PaddingRequirement::None | PaddingRequirement::PostPad => {
+                    //         if config::CONFIG.debug_load_processes {
+                    //             debug!("No PrePad app to write.");
+                    //         }
+                    //         self.state.set(State::Load);
+                    //         self.deferred_call.set();
+                    //         Ok(())
+                    //     }
+                    // }
+                // } else {
+                //     Err(ErrorCode::INVAL)
+                // }
+                self.state.set(State::Load);
+                self.deferred_call.set();
+                Ok(())
             }
             _ => Err(ErrorCode::INVAL),
         }

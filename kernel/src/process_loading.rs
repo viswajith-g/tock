@@ -498,7 +498,6 @@ const BDT_MAGIC: [u8; 4] = *b"BDTS";
 const MAX_KERNEL_ENTRIES: usize = 120;
 
 const BINARY_TYPE_KERNEL: u8 = 0x01;
-const BINARY_TYPE_APP: u8 = 0x02;
 
 /// Binary entry from BDT
 #[derive(Copy, Clone, Debug)]
@@ -780,61 +779,84 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     }
 
     fn load_and_check(&self) {
-        // Scan entire flash - scan function automatically skips exclusion zones
-        let mut app_starts = [0usize; 10];
-        let mut app_ends = [0usize; 10];
-        
-        let _ = self.scan_flash_for_process_binaries(
-            self.flash_bank.get(),
-            &mut app_starts,
-            &mut app_ends
-        );
-        
-        // Get current position to track which apps we've already processed
-        let current_pos = self.flash.get().as_ptr() as usize;
-        
-        // Find the first unprocessed app
-        for i in 0..app_starts.len() {
-            if app_starts[i] == 0 {
-                break; // No more apps
-            }
-            
-            if app_starts[i] < current_pos + 1 {
-                continue; // Already processed this app
-            }
-            
-            // Set flash pointer to this app
-            let flash_bank = self.flash_bank.get();
-            let offset = app_starts[i] - flash_bank.as_ptr() as usize;
-
-            // debug!("offset: {:?}", offset);
-            
-            if let Some(app_flash) = flash_bank.get(offset..) {
-                self.flash.set(app_flash);
-
-                let flash_slice_start = self.flash.get().as_ptr() as usize;
-                let flash_slice_end = flash_slice_start + self.flash.get().len() as usize;
+        match self.run_mode.get() {
+            Some(SequentialProcessLoaderMachineRunMode::RuntimeMode) => {
+                // Runtime mode: we already know exactly where the app is
+                // Just discover and check the binary at the current flash position
                 
                 match self.discover_process_binary() {
                     Ok(pb) => {
                         match self.checker.check(pb) {
-                            // Wait for checker async callback
-                            Ok(()) => {return;}
-                            // Check failed, continue to next app
-                            Err(_e) => {continue;}
+                            Ok(()) => return,  // Wait for done()
+                            Err(_e) => {
+                                // Check failed
+                                self.state.set(SequentialProcessLoaderMachineState::LoadProcesses);
+                                self.deferred_call.set();
+                            }
                         }
                     }
                     Err(_e) => {
-                        // Binary discovery failed, continue to next app
-                        continue;
+                        // Binary discovery failed
+                        self.state.set(SequentialProcessLoaderMachineState::LoadProcesses);
+                        self.deferred_call.set();
                     }
                 }
             }
+            
+            Some(SequentialProcessLoaderMachineRunMode::BootMode) | None => {
+                // Scan entire flash, automatically skips exclusion zones
+                let mut app_starts = [0usize; 10];
+                let mut app_ends = [0usize; 10];
+                
+                let _ = self.scan_flash_for_process_binaries(
+                    self.flash_bank.get(),
+                    &mut app_starts,
+                    &mut app_ends
+                );
+                
+                // Get current position to track which apps we've already processed
+                let current_pos = self.flash.get().as_ptr() as usize;
+                
+                // Find the first unprocessed app
+                for i in 0..app_starts.len() {
+                    if app_starts[i] == 0 {
+                        break; // No more apps
+                    }
+                    
+                    if app_starts[i] < current_pos {
+                        continue; // Already processed this app
+                    }
+                    
+                    // Set flash pointer to this app
+                    let flash_bank = self.flash_bank.get();
+                    let offset_start = app_starts[i] - flash_bank.as_ptr() as usize;
+                    let offset_end = app_ends[i] - flash_bank.as_ptr() as usize;
+                    
+                    if let Some(app_flash) = flash_bank.get(offset_start..offset_end) {
+                        self.flash.set(app_flash);
+                        
+                        match self.discover_process_binary() {
+                            Ok(pb) => {
+                                match self.checker.check(pb) {
+                                    // Wait for checker async callback
+                                    Ok(()) => {return;}
+                                    // Check failed, continue to next app
+                                    Err(_e) => {continue;}
+                                }
+                            }
+                            Err(_e) => {
+                                // Binary discovery failed, continue to next app
+                                continue;
+                            }
+                        }
+                    }
+                }
+                
+                // All apps checked, move to loading
+                self.state.set(SequentialProcessLoaderMachineState::LoadProcesses);
+                self.deferred_call.set();
+            }
         }
-        
-        // All apps checked, move to loading
-        self.state.set(SequentialProcessLoaderMachineState::LoadProcesses);
-        self.deferred_call.set();
     }
 
     /// Try to parse a process binary from flash.
@@ -1070,7 +1092,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             flash: &'static [u8],
             process_binaries_start_addresses: &mut [usize],
             process_binaries_end_addresses: &mut [usize],
-            check_exclusion: impl Fn(usize) -> Option<usize>, // NEW: exclusion checker
+            check_exclusion: impl Fn(usize) -> Option<usize>,
         ) -> Result<(), ProcessBinaryError> {
             let flash_end = flash.as_ptr() as usize + flash.len() - 1;
             let flash_start = flash.as_ptr() as usize;
@@ -1168,54 +1190,81 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         app_size: usize,
         process_binaries_start_addresses: &mut [usize],
         process_binaries_end_addresses: &mut [usize],
-    ) -> usize {
-        let mut start_count = 0;
-        let mut end_count = 0;
-
-        // Remove zeros from addresses in place.
+    ) -> Option<usize> {
+        
+        // Collect all occupied regions (exclusions + apps)
+        let mut occupied_regions: [(usize, usize); 26] = [(0, 0); 26]; // 16 exclusions + 10 apps
+        let mut region_count = 0;
+        
+        // Add exclusion regions (bootloader + kernels)
+        let (exclusions, exclusion_count) = self.build_exclusion_list();
+        for i in 0..exclusion_count {
+            if let Some(region) = exclusions[i] {
+                occupied_regions[region_count] = (region.start, region.end);
+                region_count += 1;
+            }
+        }
+        
+        // Add existing app regions
         for i in 0..process_binaries_start_addresses.len() {
             if process_binaries_start_addresses[i] != 0 {
-                process_binaries_start_addresses[start_count] = process_binaries_start_addresses[i];
-                start_count += 1;
+                occupied_regions[region_count] = (
+                    process_binaries_start_addresses[i],
+                    process_binaries_end_addresses[i]
+                );
+                region_count += 1;
             }
         }
-
-        for i in 0..process_binaries_end_addresses.len() {
-            if process_binaries_end_addresses[i] != 0 {
-                process_binaries_end_addresses[end_count] = process_binaries_end_addresses[i];
-                end_count += 1;
-            }
-        }
-
-        // If there is only one application in flash:
-        if start_count == 1 {
-            let potential_address = self
-                .find_next_cortex_m_aligned_address(process_binaries_end_addresses[0], app_size);
-            return potential_address;
-        }
-
-        // Otherwise, iterate through the sorted start and end addresses to find gaps for the new app.
-        for i in 0..start_count - 1 {
-            let gap_start = process_binaries_end_addresses[i];
-            let gap_end = process_binaries_start_addresses[i + 1];
-
-            // Ensure gap_end is valid (skip zeros - these indicate there are no process binaries).
-            if gap_end == 0 {
-                continue;
-            }
-
-            // If there is a valid gap, i.e., (gap_end > gap_start), check alignment.
-            if gap_end > gap_start {
-                let potential_address =
-                    self.find_next_cortex_m_aligned_address(gap_start, app_size);
-                if potential_address + app_size < gap_end {
-                    return potential_address;
+        
+        // Sort regions by start address
+        for i in 0..region_count {
+            for j in i+1..region_count {
+                if occupied_regions[j].0 < occupied_regions[i].0 {
+                    let temp = occupied_regions[i];
+                    occupied_regions[i] = occupied_regions[j];
+                    occupied_regions[j] = temp;
                 }
             }
         }
-        // If no gaps found, check after the last app.
-        let last_app_end_address = process_binaries_end_addresses[end_count - 1];
-        self.find_next_cortex_m_aligned_address(last_app_end_address, app_size)
+        
+        // Find first gap that fits the new app
+        let flash_bank = self.flash_bank.get();
+        let flash_start = flash_bank.as_ptr() as usize;
+        
+        // Check gap before first region
+        if region_count > 0 {
+            let gap_start = flash_start;
+            let gap_end = occupied_regions[0].0;
+            
+            if gap_end > gap_start {
+                let potential_address = self.find_next_cortex_m_aligned_address(gap_start, app_size);
+                if potential_address + app_size <= gap_end {
+                    return Some(potential_address);
+                }
+            }
+        }
+        
+        // Check gaps between consecutive regions
+        for i in 0..region_count.saturating_sub(1) {
+            let gap_start = occupied_regions[i].1;
+            let gap_end = occupied_regions[i+1].0;
+            
+            if gap_end > gap_start {
+                let potential_address = self.find_next_cortex_m_aligned_address(gap_start, app_size);
+                if potential_address + app_size <= gap_end {
+                    return Some(potential_address);
+                }
+            }
+        }
+        
+        // Check gap after last region
+        if region_count > 0 {
+            let gap_start = occupied_regions[region_count - 1].1;
+            let potential_address = self.find_next_cortex_m_aligned_address(gap_start, app_size);
+            return Some(potential_address);
+        }
+
+        None
     }
 
     /// This function checks if there is a need to pad either before or after
@@ -1319,11 +1368,16 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                 if config::CONFIG.debug_load_processes {
                     debug!("Successfully scanned flash");
                 }
+                // let new_app_address = match self.compute_new_process_binary_address(
+                //     new_app_size,
+                //     pb_start_address,
+                //     pb_end_address,
+                // );
                 let new_app_address = self.compute_new_process_binary_address(
                     new_app_size,
                     pb_start_address,
                     pb_end_address,
-                );
+                ).ok_or(ProcessBinaryError::NotEnoughFlash)?;
                 if new_app_address + new_app_size - 1 > total_flash_end {
                     Err(ProcessBinaryError::NotEnoughFlash)
                 } else {
@@ -1414,6 +1468,13 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         let result = self.check_new_binary_validity(process_address);
         match result {
             true => {
+                if config::CONFIG.debug_load_processes {
+                    debug!(
+                        "process address: {:#0x}, with a size: {:#00x}", 
+                        process_address, 
+                        app_size
+                    );
+                }
                 if let Some(flash) = process_flash {
                     self.flash.set(flash);
                 } else {
