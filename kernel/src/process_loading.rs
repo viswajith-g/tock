@@ -781,13 +781,13 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     fn load_and_check(&self) {
         match self.run_mode.get() {
             Some(SequentialProcessLoaderMachineRunMode::RuntimeMode) => {
-                // Runtime mode: we already know exactly where the app is
+                // We already know exactly where the app is located
                 // Just discover and check the binary at the current flash position
                 
                 match self.discover_process_binary() {
                     Ok(pb) => {
                         match self.checker.check(pb) {
-                            Ok(()) => return,  // Wait for done()
+                            Ok(()) => return, // Wait on checker response
                             Err(_e) => {
                                 // Check failed
                                 self.state.set(SequentialProcessLoaderMachineState::LoadProcesses);
@@ -804,7 +804,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             }
             
             Some(SequentialProcessLoaderMachineRunMode::BootMode) | None => {
-                // Scan entire flash, automatically skips exclusion zones
+                // Scan entire flash, automatically skip exclusion zones
                 let mut app_starts = [0usize; 10];
                 let mut app_ends = [0usize; 10];
                 
@@ -814,20 +814,19 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                     &mut app_ends
                 );
                 
-                // Get current position to track which apps we've already processed
+                // Track flash traversal
                 let current_pos = self.flash.get().as_ptr() as usize;
                 
-                // Find the first unprocessed app
+                // Find the first app
                 for i in 0..app_starts.len() {
                     if app_starts[i] == 0 {
                         break; // No more apps
                     }
                     
                     if app_starts[i] < current_pos {
-                        continue; // Already processed this app
+                        continue; // Already crossed this region
                     }
                     
-                    // Set flash pointer to this app
                     let flash_bank = self.flash_bank.get();
                     let offset_start = app_starts[i] - flash_bank.as_ptr() as usize;
                     let offset_end = app_ends[i] - flash_bank.as_ptr() as usize;
@@ -1124,9 +1123,6 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                         Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(app_length)) => {
                             (0, 0, app_length)
                         }
-                        // Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
-                        //     return Ok(());
-                        // }
                         Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
                             // Skip to next page and continue scanning
                             addresses = ((addresses + PAGE_SIZE) / PAGE_SIZE) * PAGE_SIZE;
@@ -1192,8 +1188,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         process_binaries_end_addresses: &mut [usize],
     ) -> Option<usize> {
         
-        // Collect all occupied regions (exclusions + apps)
-        let mut occupied_regions: [(usize, usize); 26] = [(0, 0); 26]; // 16 exclusions + 10 apps
+        // Collect all occupied regions (16 exclusions + 10 apps)
+        let mut occupied_regions: [(usize, usize); 26] = [(0, 0); 26];
         let mut region_count = 0;
         
         // Add exclusion regions (bootloader + kernels)
@@ -1526,7 +1522,6 @@ impl<C: Chip, D: ProcessStandardDebug> DeferredCallClient
 {
     fn handle_deferred_call(&self) {
         // We use deferred calls to start the operation in the async loop.
-        // debug!("=== handle_deferred_call, state={:?} ===", self.state.get());
         match self.state.get() {
             Some(SequentialProcessLoaderMachineState::DiscoverProcessBinaries) => {
                 self.load_and_check();

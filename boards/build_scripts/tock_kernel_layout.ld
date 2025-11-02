@@ -264,7 +264,7 @@ SECTIONS
          */
         PROVIDE(__global_pointer$ = . + 0x800);
 
-        /* We also need to relocate the GOT during boot */
+        /* The kernel no longer lives at 0x0, so the GOT has to be stored here */
         *(.got .got.*)
 
         *(.ramfunc .ramfunc.*);
@@ -353,14 +353,15 @@ SECTIONS
 
         /* TLV: Kernel Relocations */
         /* Relocation TLV (VALUE) */
+        
         _tock_attr_reloc_start = .;
-        KEEP(*(.tock.attr.kernel_relocation))   /* value only: link_addr, num, entries[...] */
+        KEEP(*(.tock.attr.kernel_relocation))
         _tock_attr_reloc_value_end = .;
 
-        /* Relocation TLV (HEADER placeholder to be patched by the tool) */
+        /* Relocation TLV */
         _tock_attr_reloc_header = .;
         SHORT(0x0104)   /* tlv_type: Kernel Relocations */
-        SHORT(_tock_attr_reloc_value_end - _tock_attr_reloc_start)  /* Full reserved size! */
+        SHORT(_tock_attr_reloc_value_end - _tock_attr_reloc_start)
         _tock_attr_reloc_end = .;
 
         /* TLV: Kernel Signature
@@ -421,7 +422,7 @@ SECTIONS
 /* Check to ensure the relocation values don't overflow the TLV */
 ASSERT(_tock_attr_reloc_header - _tock_attr_reloc_start >= 8, "Reloc TLV too small");
 
-/* Stub symbols for apps (apps section removed, BDT manages placement) */
+/* Stub symbols for apps (apps section removed, so this does not hold much meaning) */
 _sapps = 0x9000;
 _eapps = _sapps + LENGTH(rom);
 

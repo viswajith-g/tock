@@ -432,8 +432,12 @@ impl<
 
             1 => {
                 // Request kernel to allocate resources for
-                // an app with size passed via `arg1`.
-                let res = self.storage_driver.setup(arg1);
+                // a new binary with size passed via `arg1`.
+                let binary_type = match arg2 {
+                    1 => dynamic_binary_storage::BinaryType::Kernel,
+                    _ => dynamic_binary_storage::BinaryType::App,
+                };
+                let res = self.storage_driver.setup(arg1, binary_type);
                 match res {
                     Ok(app_len) => {
                         self.new_app_length.set(app_len);

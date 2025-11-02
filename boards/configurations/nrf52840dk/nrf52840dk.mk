@@ -22,7 +22,7 @@ $(KERNEL_RELOC):
 	@echo "Building kernel relocation emebd tool"
 	cd $(KERNEL_RELOC_DIR) && cargo build --release
 
-# Override the binary creation to include signing and relocation embedding
+# Override the binary creation to include signing and relocations
 # Flow: Build ELF → Sign → Embed Relocations → Create Binary
 $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin: \
     $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) \
