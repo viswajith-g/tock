@@ -50,10 +50,10 @@ pub fn relocate_kernel_in_place<IO: BootloaderIO>(
     // _io.debug("relocation offset:");
     // _io.format(offset as usize, &mut buf);
 
-    // 1) Apply TLV relocations (skip vector table region for now)
+    // Apply TLV relocations (skip vector table region for now)
     apply_tlv_relocations(kernel_base, offset, reloc_info, _io)?;
 
-    // 2) Relocate vector table entries and set VTOR
+    // Relocate vector table entries and set VTOR
     relocate_vector_table(kernel_base, offset, _io)?;
 
     Ok(())
@@ -74,7 +74,7 @@ fn relocate_vector_table<IO: BootloaderIO>(
     let mut modified = false;
 
     // Entry 0 = MSP (RAM) — do not relocate.
-    // Relocate entries 1..=N if they look like Flash pointers, preserving T-bit.
+    // Relocate entries 1..N if they look like Flash pointers, while preserving T-bit.
     for i in 1..100 {
         let o = i * 4;
         if o + 4 > PAGE_SIZE {
@@ -121,7 +121,7 @@ fn apply_tlv_relocations<IO: BootloaderIO>(
     // _io.debug("applying TLV relocations");
 
     // We treat the first 100 words (including MSP and handlers) as the VT region
-    // and skip TLV-driven patches there; VT is handled separately above.
+    // and skip TLV-driven patches there; VT is handled separately
     const VT_WORDS: usize = 100;
     const VT_BYTES: usize = VT_WORDS * 4;
 
@@ -142,7 +142,7 @@ fn apply_tlv_relocations<IO: BootloaderIO>(
         if entry.rel_type != R_ARM_ABS32 {
             continue;
         }
-        // Skip anything inside the VT region; we patched VT separately.
+        // Skip anything inside the VT region; we patch VT separately
         if (entry.offset as usize) < VT_BYTES {
             continue;
         }
@@ -162,7 +162,7 @@ fn apply_tlv_relocations<IO: BootloaderIO>(
             page_modified = false;
         }
 
-        // Read the *current* word at the site and decide based on it
+        // Read the current word at the site and decide based on it
         let off_in_page = patch_addr % PAGE_SIZE;
         let cur = read_u32_le(&page_buffer[off_in_page..off_in_page + 4]);
 
@@ -170,12 +170,11 @@ fn apply_tlv_relocations<IO: BootloaderIO>(
         let cur_t = cur & 1;
         let cur_b = cur & !1;
 
-        // Hard filters:
-        // 1) don't relocate zeros or obvious non-pointers
+        // Don't relocate zeros or obvious non-pointers
         if cur_b == 0 {
             continue;
         }
-        // 2) only relocate if it *looks like* a pointer into Flash
+        // Only relocate if it looks like(?) a pointer into Flash
         if !looks_like_flash_ptr(cur_b) {
             continue;
         }
@@ -194,7 +193,7 @@ fn apply_tlv_relocations<IO: BootloaderIO>(
             write_u32_le(&mut page_buffer[off_in_page..off_in_page + 4], want);
             page_modified = true;
         }
-        // If cur == want, it’s already relocated → nothing to do.
+        // If cur == want, it’s already relocated, nothing to do.
         // We no longer require cur == entry.original_value to proceed.
     }
 

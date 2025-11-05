@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2025.
 
-//! Parser for Tock kernel attributes (TLV structure)
+//! Parser for Tock kernel attributes
 
 use crate::error::BootError;
 use crate::types::{KernelAttributes, KernelVersion, SignatureAttribute};
@@ -43,7 +43,7 @@ fn parse_tlvs<IO: BootloaderIO>(
     let len = attr_slice.len();
     // let mut buf = [0u8; 32];
     
-    // Skip the sentinel "TOCK" (4 bytes) and version/reserved (4 bytes)
+    // Skip the sentinel (4 bytes) and version/reserved (4 bytes)
     if len < 8 {
         return Err(BootError::InvalidTLV);
     }
@@ -186,11 +186,11 @@ fn parse_version(data: &[u8]) -> Result<KernelVersion, BootError> {
         major: u16::from_le_bytes([data[0], data[1]]),
         minor: u16::from_le_bytes([data[2], data[3]]),
         patch: u16::from_le_bytes([data[4], data[5]]),
-        // Ignore prerelease (data[6..8]) for version comparison
+        // Ignore prerelease (data[6..8])
     })
 }
 
-/// Parses a pair of u32 values (8 bytes total)
+/// Parses a pair of u32 values
 fn parse_pair(data: &[u8]) -> Result<(u32, u32), BootError> {
     if data.len() != 8 {
         return Err(BootError::InvalidTLV);

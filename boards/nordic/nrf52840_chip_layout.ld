@@ -7,7 +7,7 @@ MEMORY
 {
   /* Kernel can be placed anywhere, but linked for address 0x0 */
   /* Bootloader will relocate at runtime */
-  rom (rx)  : ORIGIN = 0x00009000, LENGTH = 964K
+  rom (rx)  : ORIGIN = 0x00009000, LENGTH = 956K
   ram (rwx) : ORIGIN = 0x20000000, LENGTH = 256K
 }
 

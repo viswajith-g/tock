@@ -712,13 +712,23 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
 
     /// Helper function to find the next potential aligned address for the
     /// new app with size `app_length` assuming Cortex-M alignment rules.
-    fn find_next_cortex_m_aligned_address(&self, address: usize, app_length: usize) -> usize {
-        let remaining = address % app_length;
-        if remaining == 0 {
-            address
-        } else {
-            address + (app_length - remaining)
-        }
+    // fn find_next_cortex_m_aligned_address(&self, address: usize, app_length: usize) -> usize {
+    //     let remaining = address % app_length;
+    //     if remaining == 0 {
+    //         address
+    //     } else {
+    //         address + (app_length - remaining)
+    //     }
+    // }
+    fn find_next_cortex_m_aligned_address(&self, address: usize, _app_length: usize) -> usize {
+        // let remaining = address % app_length;
+        // if remaining == 0 {
+        //     address
+        // } else {
+        //     address + (app_length - remaining)
+        // }
+        const PAGE_SIZE: usize = 0x1000;
+        (address + (PAGE_SIZE - 1)) & !(PAGE_SIZE - 1)
     }
 
     /// Build exclusion list once at the start of loading
@@ -1398,6 +1408,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         &self,
         new_app_size: usize,
     ) -> Result<(usize, PaddingRequirement, usize, usize), ProcessBinaryError> {
+        // debug!("[pl] checking flash for new address for binary of size: {:?}", new_app_size);
         const MAX_PROCS: usize = 10;
         let mut pb_start_address: [usize; MAX_PROCS] = [0; MAX_PROCS];
         let mut pb_end_address: [usize; MAX_PROCS] = [0; MAX_PROCS];
@@ -1407,6 +1418,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             &mut pb_end_address,
         ) {
             Ok(app_address) => {
+                // debug!("[pl] app_address: {:?}", app_address);
                 let (pr, prev_app_addr, next_app_addr) = self
                     .compute_padding_requirement_and_neighbors(
                         app_address,

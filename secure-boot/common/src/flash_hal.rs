@@ -2,21 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2025.
 
-//! Flash HAL for nRF52840
-//! 
-//! Wrapper around NVMC (Non-Volatile Memory Controller)
+//! Flash HAL (nRF52840 specific for now. Should be a HIL eventually)
 
 use crate::error::BootError;
 
 /// nRF52840 NVMC base address
 const NVMC_BASE: usize = 0x4001_E000;
 
-/// NVMC registers
+/// Registers
 const NVMC_READY: *const u32 = (NVMC_BASE + 0x400) as *const u32;
 const NVMC_CONFIG: *mut u32 = (NVMC_BASE + 0x504) as *mut u32;
 const NVMC_ERASEPAGE: *mut u32 = (NVMC_BASE + 0x508) as *mut u32;
 
-/// NVMC configuration values
+/// Configuration values
 const CONFIG_REN: u32 = 0; // Read-only
 const CONFIG_WEN: u32 = 1; // Write enable
 const CONFIG_EEN: u32 = 2; // Erase enable
@@ -24,7 +22,7 @@ const CONFIG_EEN: u32 = 2; // Erase enable
 /// nRF52840 page size
 pub const PAGE_SIZE: usize = 4096;
 
-/// Flash HAL for nRF52840
+/// Flash HAL
 pub struct FlashHal;
 
 impl FlashHal {
@@ -65,7 +63,7 @@ impl FlashHal {
     
     /// Erase a single page
     /// 
-    /// Address must be page-aligned (multiple of 4096)
+    /// Address must be page-aligned
     pub fn erase_page(address: usize) -> Result<(), BootError> {
         if address % PAGE_SIZE != 0 {
             return Err(BootError::FlashOperationFailed);
@@ -106,9 +104,9 @@ impl FlashHal {
         Ok(())
     }
     
-    /// Write a single word (4 bytes) to flash
+    /// Write a word to flash
     /// 
-    /// Address must be word-aligned (multiple of 4)
+    /// Address must be word-aligned
     pub fn write_word(address: usize, word: u32) -> Result<(), BootError> {
         if address % 4 != 0 {
             return Err(BootError::FlashOperationFailed);

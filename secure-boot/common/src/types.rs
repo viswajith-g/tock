@@ -7,10 +7,10 @@
 /// Represents the location and boundaries of the kernel in flash
 #[derive(Copy, Clone)]
 pub struct KernelRegion {
-    /// Start address of kernel code in flash
+    /// Start address of kernel image in flash
     pub start: usize,
     
-    /// End address of kernel code (start of attributes section)
+    /// End address of kernel image including attributes section
     pub end: usize,
     
     /// Entry point address (generally the same as start, pointing to _stext)
@@ -67,7 +67,7 @@ pub struct RelocationInfo {
     pub entries_start: usize,    // Flash address of first entry
 }
 
-/// Single relocation entry (matches kernel structure)
+/// Single relocation entry
 #[derive(Clone, Copy)]
 pub struct RelocationEntry {
     pub offset: u32,           // Offset from kernel start

@@ -41,7 +41,7 @@ struct Args {
     out: Option<PathBuf>,
 }
 
-// Demo key. Do NOT use in production.
+// Demo key. DO NOT USE IN PRODUCTION. CONSIDER IT COMPROMISED.
 const PRIVATE_KEY_PEM: &str = r#"
 -----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg9kwjBrAc65xuZSsE
@@ -75,10 +75,10 @@ fn main() -> Result<()> {
     // Physical addresses
     let sig_value_paddr = attr_paddr + sig_val_off_in_attr;
 
-    println!("DEBUG: attr_off = 0x{:x}, attr_size = 0x{:x}", attr_off, attr_size);
-    println!("DEBUG: attr_paddr = 0x{:x}", attr_paddr);
-    println!("DEBUG: kernel_len = 0x{:x}", kern_flash_len);
-    println!("DEBUG: kernel_start would be = 0x{:x}", attr_paddr.wrapping_sub(kern_flash_len as usize));
+    // println!("DEBUG: attr_off = 0x{:x}, attr_size = 0x{:x}", attr_off, attr_size);
+    // println!("DEBUG: attr_paddr = 0x{:x}", attr_paddr);
+    // println!("DEBUG: kernel_len = 0x{:x}", kern_flash_len);
+    // println!("DEBUG: kernel_start would be = 0x{:x}", attr_paddr.wrapping_sub(kern_flash_len as usize));
 
     // Set hash window to [kernel_start_paddr .. attributes_end_paddr)
     let attributes_end_paddr   = attr_paddr + attr_size;

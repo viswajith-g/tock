@@ -9,7 +9,7 @@ pub enum BootError {
     /// "TOCK" sentinel not found in expected location
     SentinelNotFound,
     
-    /// Kernel signature attribute (0x0105) not found
+    /// Kernel signature attribute (0x0104) not found
     SignatureMissing,
     
     /// Invalid TLV structure or length

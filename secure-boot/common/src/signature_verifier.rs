@@ -33,25 +33,19 @@ pub fn verify_signature<C: BoardConfig, IO: BootloaderIO>(
     let encoded_point = EncodedPoint::from_untagged_bytes(public_key_bytes.into());
     let verifying_key = VerifyingKey::from_encoded_point(&encoded_point)
         .map_err(|_| BootError::VerificationFailed)?;
-
-    // _io.debug("fail point 1");
     
-    // Construct signature from r and s components
+    // Construct signature
     let mut signature_bytes = [0u8; 64];
     signature_bytes[0..32].copy_from_slice(&signature.r);
     signature_bytes[32..64].copy_from_slice(&signature.s);
     
     let signature = Signature::from_bytes(&signature_bytes.into())
         .map_err(|_| BootError::InvalidSignature)?;
-
-    // _io.debug("fail point 2");
     
     // Verify the signature against the hash
     verifying_key
         .verify_prehash(hash, &signature)
         .map_err(|_| BootError::VerificationFailed)?;
-
-    // _io.debug("fail point3");
     
     Ok(())
 }

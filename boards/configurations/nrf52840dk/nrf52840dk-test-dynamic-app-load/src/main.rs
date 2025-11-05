@@ -433,6 +433,8 @@ pub unsafe fn main() {
         core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
     );
 
+    kernel::debug!("Kernel Version: {}.{}", kernel::KERNEL_MAJOR_VERSION, kernel::KERNEL_MINOR_VERSION);
+
     // Create and start the asynchronous process loader.
     let loader = components::loader::sequential::ProcessLoaderSequentialComponent::new(
         checker,

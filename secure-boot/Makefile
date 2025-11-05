@@ -34,7 +34,7 @@ ifndef BOARD
 	@echo "Run 'make list-boards' to see available boards"
 	@exit 1
 endif
-	@echo "Building bootloader for $(BOARD)..."
+	@echo "Building bootloader for $(BOARD)io"
 	@$(MAKE) -C $(BOARD_DIR) build
 
 # Clean build artifacts for the specified board
@@ -46,7 +46,7 @@ ifndef BOARD
 	@echo "Or use 'make clean-all' to clean all boards"
 	@exit 1
 endif
-	@echo "Cleaning bootloader for $(BOARD)..."
+	@echo "Cleaning bootloader for $(BOARD)io"
 	@$(MAKE) -C $(BOARD_DIR) clean
 
 # Flash the bootloader to the board
@@ -57,7 +57,7 @@ ifndef BOARD
 	@echo "Usage: make BOARD=<board_name> install"
 	@exit 1
 endif
-	@echo "Flashing bootloader to $(BOARD)..."
+	@echo "Flashing bootloader to $(BOARD)io"
 	@$(MAKE) -C $(BOARD_DIR) flash
 
 # Show size of the bootloader binary

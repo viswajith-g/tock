@@ -5,8 +5,6 @@
 //! Kernel and TLVs location discovery by scanning backwards from application start
 
 use crate::error::BootError;
-// use crate::types::KernelRegion;
-// use crate::BoardConfig;
 use crate::BootloaderIO;
 use crate::attributes_parser;
 
@@ -21,29 +19,11 @@ pub struct PotentialKernel {
     pub attributes_end: usize,
 }
 
-// /// Scans the kernel region backwards from APP_START to find the "TOCK" sentinel
-// pub fn define_kernel_region<C: BoardConfig>() -> Result<KernelRegion, BootError> {
-//     let app_start = C::APP_START;
-//     let kernel_start = C::KERNEL_START;
-    
-//     // Find "TOCK" sentinel by scanning backwards from app_start
-//     let sentinel_address = find_tock_sentinel(app_start)?;
-    
-//     // Scan TLVs backwards to find actual start of attributes
-//     let attributes_start = scan_tlvs(sentinel_address)?;
-    
-//     Ok(KernelRegion {
-//         start: kernel_start,
-//         end: attributes_start,
-//         entry_point: kernel_start, // _stext is kernel start
-//         attributes_start,
-//     })
-// }
 
 /// Scan flash region for potential kernels
 /// 
-/// Searches forward through the given flash range looking for TOCK sentinels.
-/// Returns up to 8 potential kernels (signature verification happens separately).
+/// Searches forward through the given flash range looking for `TOCK` sentinels.
+/// Returns up to 8 potential kernels.
 pub fn scan_for_potential_kernels<IO: BootloaderIO>(
     scan_start: usize,
     scan_end: usize,
@@ -95,7 +75,7 @@ pub fn scan_for_potential_kernels<IO: BootloaderIO>(
     Ok(kernels)
 }
 
-/// Find next TOCK sentinel in flash range
+/// Find next sentinel in flash range
 fn find_tock_sentinel<IO: BootloaderIO>(start: usize, end: usize, _io:&IO) -> Option<usize> {
     // Align to word boundary
     let mut addr = (start + 3) & !3;
@@ -119,9 +99,9 @@ fn find_tock_sentinel<IO: BootloaderIO>(start: usize, end: usize, _io:&IO) -> Op
 }
 
 
-/// Parse basic kernel info from a TOCK sentinel location
+/// Parse basic kernel info from a sentinel location
 /// 
-/// This extracts kernel boundaries and location but does NOT verify signatures.
+/// This extracts kernel boundaries and location.
 fn parse_kernel_info<IO: BootloaderIO>(
     sentinel_addr: usize,
     _kernel_start: usize,
@@ -169,11 +149,9 @@ fn parse_kernel_info<IO: BootloaderIO>(
 }
 
 
-/// Scan TLVs backward from TOCK sentinel to find start of attributes
+/// Scan TLVs backward from sentinel to find start of attributes
 /// 
 /// Layout in flash: [...kernel code...] [TLVs...] [Version/Reserved] [TOCK]
-/// Given the TOCK location, this walks backward through the TLV chain
-/// to find where the attributes section starts.
 fn scan_tlvs_backward<IO: BootloaderIO>(sentinel_address: usize, _io: &IO) -> Result<usize, BootError> {
     let mut pos = sentinel_address;
     // let mut buf = [0u8; 32];

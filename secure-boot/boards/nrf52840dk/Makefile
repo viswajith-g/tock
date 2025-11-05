@@ -69,21 +69,16 @@ flash: $(BIN_FILE)
 flash-openocd: $(BIN_FILE)
 	$(TOCKLOADER) $(TOCKLOADER_GENERAL_FLAGS) flash --address $(BOOTLOADER_ADDRESS) --board nrf52dk --openocd $<
 
-# Upload the bootloader using probe-rs (alternative)
+# Upload the bootloader using probe-rs
 .PHONY: flash-probe-rs
 flash-probe-rs: build
-	@echo "Flashing bootloader to nRF52840DK using probe-rs..."
+	@echo "Flashing bootloader to nRF52840DK using probe-rsio"
 	probe-rs run --chip nRF52840_xxAA $(ELF_FILE)
-
-# Upload the bootloader over serial/bootloader
-.PHONY: program
-program:
-	$(error Cannot program nRF52840DK bootloader over USB. Use \`make flash\` and JTAG)
 
 # Clean build artifacts
 .PHONY: clean
 clean:
-	@echo "Cleaning nRF52840DK bootloader..."
+	@echo "Cleaning nRF52840DK bootloaderio"
 	$(CARGO) clean
 	rm -rf $(BUILD_DIR)
 
@@ -95,9 +90,8 @@ help:
 	@echo "  all (default)    - Build the bootloader"
 	@echo "  build            - Build the bootloader"
 	@echo "  install          - Flash bootloader"
-	@echo "  flash            - Flash to board using tockloader + JLink"
-	@echo "  flash-openocd    - Flash to board using tockloader + OpenOCD"
+	@echo "  flash            - Flash to board using tockloader and JLink"
+	@echo "  flash-openocd    - Flash to board using tockloader and OpenOCD"
 	@echo "  flash-probe-rs   - Flash to board using probe-rs"
-	@echo "  program          - Error (cannot program over USB)"
 	@echo "  clean            - Clean build artifacts"
 	@echo "  help             - Show this help"

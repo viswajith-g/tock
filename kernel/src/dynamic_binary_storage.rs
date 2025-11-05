@@ -29,7 +29,7 @@ pub const BUF_LEN: usize = 512;
 /// The number of bytes in the TBF header for a padding app.
 const PADDING_TBF_HEADER_LENGTH: usize = 16;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum State {
     Idle,
     Setup,
@@ -71,8 +71,8 @@ const KERNEL_TLV_APP_MEMORY: u16 = 0x0101;
 const KERNEL_TLV_KERNEL_FLASH: u16 = 0x0102;
 const KERNEL_TLV_KERNEL_VERSION: u16 = 0x0103;
 
-const KERNEL_SENTINEL: [u8; 4] = [0x54, 0x4F, 0x43, 0x4B]; // "TOCK"
-const KERNEL_ATTRIBUTES_VERSION: u8 = 0x01;
+const KERNEL_SENTINEL: [u8; 4] = [0x54, 0x4F, 0x43, 0x4B]; // `TOCK`
+// const KERNEL_ATTRIBUTES_VERSION: u8 = 0x01;
 
 /// This interface supports flashing binaries at runtime.
 pub trait DynamicBinaryStore {
@@ -198,39 +198,37 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
     /// Validate that the written binary is actually a kernel
     fn validate_kernel_binary(&self, start_addr: usize, size: usize) -> Result<(), ErrorCode> {
         if size < 16 {
-            debug!("Kernel too small");
             return Err(ErrorCode::SIZE);
         }
         
-        // Take buffer for reading flash
         let buffer = self.buffer.take().ok_or(ErrorCode::BUSY)?;
         
-        // Read last 512 bytes (or whole kernel if smaller) to check TLVs
+        // Read last 512 bytes to check TLVs
         let read_size = core::cmp::min(size, buffer.len());
         let read_addr = start_addr + size - read_size;
         
         self.state.set(State::KernelValidation);
         self.flash_driver.read(buffer, read_addr, read_size)
     }
-    /// Parse and validate kernel TLVs from the read buffer
+
+    /// Parse and validate kernel TLVs
     fn check_kernel_tlvs(&self, buffer: &[u8], buffer_offset: usize) -> Result<(), ErrorCode> {
-        // buffer_offset is where in the full binary this buffer starts
         let size = buffer.len();
         
-        // Check sentinel (last 4 bytes)
+        // Check sentinel
         let sentinel_offset = size - 4;
         let sentinel = &buffer[sentinel_offset..sentinel_offset + 4];
         if sentinel != KERNEL_SENTINEL {
-            debug!("Invalid kernel sentinel");
+            // Kernel Sentinel Mismatch
             return Err(ErrorCode::INVAL);
         }
         
         // Check version (4 bytes before sentinel)
-        let version = buffer[size - 8 + 3];
-        if version != KERNEL_ATTRIBUTES_VERSION {
-            debug!("Unsupported kernel version: {}", version);
-            return Err(ErrorCode::NOSUPPORT);
-        }
+        // let version = buffer[size - 8 + 3];
+        // if version != KERNEL_ATTRIBUTES_VERSION {
+        //     // unsupported kernel version
+        //     return Err(ErrorCode::NOSUPPORT);
+        // }
         
         // Parse TLVs backwards
         let mut offset = size - 8;
@@ -239,8 +237,13 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
         
         while offset >= 4 {
             // Read TLV header
-            let tlv_type = u16::from_le_bytes([buffer[offset - 2], buffer[offset - 1]]);
-            let tlv_len = u16::from_le_bytes([buffer[offset - 4], buffer[offset - 3]]);
+            let tlv_type = u16::from_le_bytes([buffer[offset - 4], buffer[offset - 3]]);
+            let tlv_len  = u16::from_le_bytes([buffer[offset - 2], buffer[offset - 1]]);
+
+            let tlv_full_size = tlv_len as usize + 4;
+            let value_start = offset - tlv_full_size;
+            let value_end   = offset - 4; // exclude the header
+            let value = &buffer[value_start .. value_end];
             
             match tlv_type {
                 KERNEL_TLV_KERNEL_FLASH => {
@@ -251,6 +254,10 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
                 }
                 KERNEL_TLV_KERNEL_VERSION => {
                     found_kernel_version = true;
+                    let mut tmp = [0u8; 16];
+                    let n = core::cmp::min(tmp.len(), value.len());
+                    tmp[..n].copy_from_slice(&value[..n]);
+                    debug!("Kernel Version TLV ({} bytes), first {}: {:02x?}", value.len(), n, &tmp[..n]);
                     if config::CONFIG.debug_load_processes {
                         debug!("Found Kernel Version TLV");
                     }
@@ -267,7 +274,7 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
         }
         
         if !found_kernel_flash || !found_kernel_version {
-            debug!("Missing required kernel TLVs");
+            // Missing required TLVs
             return Err(ErrorCode::INVAL);
         }
         
@@ -275,10 +282,13 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
         Ok(())
     }
     
-    /// Trigger system reboot (to be implemented)
+    /// Trigger system reboot
     fn reboot_system(&self) {
         debug!("Kernel finalized, need to reboot");
         // TODO: Implement reboot mechanism
+        self.load_client.map(|client| {
+            client.load_done(Ok(()));
+        });
     }
 
     /// This function checks whether the new app will fit in the bounds dictated
@@ -339,55 +349,59 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
 
         let physical_address = self.compute_address(offset, length)?;
 
-        // The kernel needs to check if the app is trying to write/overwrite the
-        // header. So the app can only write to the first 8 bytes if the app is
-        // writing all 8 bytes. Else, the kernel must raise an error. The app is
-        // not allowed to write from say, offset 4 because we have to ensure the
-        // validity of the header.
-        //
-        // This means the app is trying to manipulate the space where the TBF
-        // header should go. Ideally, we want the app to only write the complete
-        // set of 8 bytes which is used to determine if the header is valid. We
-        // don't want apps to do this, so we return an error.
-        if (offset == 0 && length < 8) || (offset != 0 && offset < 8) {
-            return Err(ErrorCode::INVAL);
-        }
+        if let Some(mut metadata) = self.process_metadata.get() {
+            if metadata.binary_type == BinaryType::App {
+                // The kernel needs to check if the app is trying to write/overwrite the
+                // header. So the app can only write to the first 8 bytes if the app is
+                // writing all 8 bytes. Else, the kernel must raise an error. The app is
+                // not allowed to write from say, offset 4 because we have to ensure the
+                // validity of the header.
+                //
+                // This means the app is trying to manipulate the space where the TBF
+                // header should go. Ideally, we want the app to only write the complete
+                // set of 8 bytes which is used to determine if the header is valid. We
+                // don't want apps to do this, so we return an error.
+                if (offset == 0 && length < 8) || (offset != 0 && offset < 8) {
+                    return Err(ErrorCode::INVAL);
+                }
 
-        // Check if we are writing the start of the TBF header.
-        //
-        // The app is not allowed to manipulate parts of the TBF header, so if
-        // it is trying to write at the very beginning of the promised flash
-        // region, we require the app writes the entire 8 bytes of the header.
-        // This header is then checked for validity.
-        if offset == 0 {
-            // Pass the first eight bytes of the tbf header to parse out the
-            // length of the header and app. We then use those values to see if
-            // the app is going to be valid.
-            let test_header_slice = buffer.get(0..8).ok_or(ErrorCode::INVAL)?;
-            let header = test_header_slice.try_into().or(Err(ErrorCode::FAIL))?;
-            let (_version, _header_length, entry_length) =
-                match tock_tbf::parse::parse_tbf_header_lengths(header) {
-                    Ok((v, hl, el)) => (v, hl, el),
-                    Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(_entry_length)) => {
-                        // If we have an invalid header, so we return an error
+                // Check if we are writing the start of the TBF header.
+                //
+                // The app is not allowed to manipulate parts of the TBF header, so if
+                // it is trying to write at the very beginning of the promised flash
+                // region, we require the app writes the entire 8 bytes of the header.
+                // This header is then checked for validity.
+                if offset == 0 {
+                    // Pass the first eight bytes of the tbf header to parse out the
+                    // length of the header and app. We then use those values to see if
+                    // the app is going to be valid.
+                    let test_header_slice = buffer.get(0..8).ok_or(ErrorCode::INVAL)?;
+                    let header = test_header_slice.try_into().or(Err(ErrorCode::FAIL))?;
+                    let (_version, _header_length, entry_length) =
+                        match tock_tbf::parse::parse_tbf_header_lengths(header) {
+                            Ok((v, hl, el)) => (v, hl, el),
+                            Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(_entry_length)) => {
+                                // If we have an invalid header, so we return an error
+                                return Err(ErrorCode::INVAL);
+                            }
+                            Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
+                                // If we could not parse the header, then that's an
+                                // issue. We return an Error.
+                                return Err(ErrorCode::INVAL);
+                            }
+                        };
+
+                    // Check if the length in the header is matching what the app
+                    // requested during the setup phase also check if the kernel
+                    // version matches the version indicated in the new application.
+                    let mut new_binary_len = 0;
+                    if let Some(metadata) = self.process_metadata.get() {
+                        new_binary_len = metadata.new_binary_length;
+                    }
+                    if entry_length as usize != new_binary_len {
                         return Err(ErrorCode::INVAL);
                     }
-                    Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
-                        // If we could not parse the header, then that's an
-                        // issue. We return an Error.
-                        return Err(ErrorCode::INVAL);
-                    }
-                };
-
-            // Check if the length in the header is matching what the app
-            // requested during the setup phase also check if the kernel
-            // version matches the version indicated in the new application.
-            let mut new_binary_len = 0;
-            if let Some(metadata) = self.process_metadata.get() {
-                new_binary_len = metadata.new_binary_length;
-            }
-            if entry_length as usize != new_binary_len {
-                return Err(ErrorCode::INVAL);
+                }
             }
         }
         self.flash_driver.write(buffer, physical_address, length)
@@ -476,9 +490,8 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                             self.storage_client.map(|client| {
                                 client.finalize_done(Ok(()));
                             });
-                            
-                            // Trigger reboot
-                            self.reboot_system();
+
+                            self.state.set(State::Load);
                         }
                         Err(e) => {
                             // Kernel validation failed
@@ -492,13 +505,14 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                                     meta.new_binary_start_addr,
                                 );
                             }
-                            
+                            self.reset_process_loading_metadata();
                             self.storage_client.map(|client| {
                                 client.finalize_done(Err(e));
                             });
                         }
                     }
                 } else {
+                    self.reset_process_loading_metadata();
                     self.buffer.replace(buffer);
                 }
             }
@@ -680,14 +694,14 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                     if metadata.binary_type == BinaryType::Kernel {
                         // Validate kernel before proceeding
                         if config::CONFIG.debug_load_processes {
-                            debug!("Validating kernel binary...");
+                            debug!("Validating kernel binary");
                         }
                         return self.validate_kernel_binary(
                             metadata.new_binary_start_addr,
                             metadata.new_binary_length,
                         );
                     }
-                    // Else it is an app, we simply load the app
+                    // Else it is an app, so load that
                     self.state.set(State::Load);
                     self.deferred_call.set();
                     Ok(())
@@ -742,11 +756,12 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
 
     fn load(&self) -> Result<(), ErrorCode> {
         // We have finished writing the last user data segment, next step is to
-        // load the process.
+        // load the app or reboot the device for kernel
         match self.state.get() {
             State::Load => {
                 if let Some(metadata) = self.process_metadata.get() {
-                    let _ = match self.loader_driver.load_new_process_binary(
+                    if metadata.binary_type == BinaryType::App{
+                        let _ = match self.loader_driver.load_new_process_binary(
                         metadata.new_binary_start_addr,
                         metadata.new_binary_length,
                     ) {
@@ -756,6 +771,10 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                             return Err(ErrorCode::FAIL);
                         }
                     };
+                } else{
+                        // Trigger reboot
+                        self.reboot_system();
+                    }
                 } else {
                     self.reset_process_loading_metadata();
                     return Err(ErrorCode::FAIL);

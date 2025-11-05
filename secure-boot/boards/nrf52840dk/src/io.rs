@@ -3,36 +3,32 @@
 // Copyright Tock Contributors 2025.
 
 //! I/O operations for nRF52840DK bootloader
-// use core::fmt::Write;
 use secure_boot_common::BootloaderIO;
 
-/// LEDs base address
+/// LEDs for debugging
 const GPIO_P0_BASE: usize = 0x5000_0000;
 
-/// LED register offsets
 const GPIO_OUTSET_OFFSET: usize = 0x508;
 const GPIO_OUTCLR_OFFSET: usize = 0x50C;
 const GPIO_PIN_CNF_OFFSET: usize = 0x700;
 
-/// LED pins on nRF52840DK
 const LED1_PIN: u32 = 13; // P0.13
 const LED2_PIN: u32 = 14; // P0.14
 const LED3_PIN: u32 = 15; // P0.15
 const LED4_PIN: u32 = 16; // P0.16
 
-// const UARTE0_BASE: usize = 0x4000_2000;
-// const TASKS_STARTTX: *mut u32 = (UARTE0_BASE + 0x008) as *mut u32;
-// const TASKS_STOPTX: *mut u32 = (UARTE0_BASE + 0x00C) as *mut u32;
-// const EVENTS_ENDTX: *mut u32 = (UARTE0_BASE + 0x120) as *mut u32;
-// const ENABLE: *mut u32 = (UARTE0_BASE + 0x500) as *mut u32;
-// const PSEL_TXD: *mut u32 = (UARTE0_BASE + 0x50C) as *mut u32;
-// const PSEL_RXD: *mut u32 = (UARTE0_BASE + 0x514) as *mut u32;
-// const BAUDRATE: *mut u32 = (UARTE0_BASE + 0x524) as *mut u32;
-// const CONFIG: *mut u32 = (UARTE0_BASE + 0x56C) as *mut u32;
-// const TXD_PTR: *mut u32 = (UARTE0_BASE + 0x544) as *mut u32;
-// const TXD_MAXCNT: *mut u32 = (UARTE0_BASE + 0x548) as *mut u32;
-
-
+/// UART for debugging
+const UARTE0_BASE: usize = 0x4000_2000;
+const TASKS_STARTTX: *mut u32 = (UARTE0_BASE + 0x008) as *mut u32;
+const TASKS_STOPTX: *mut u32 = (UARTE0_BASE + 0x00C) as *mut u32;
+const EVENTS_ENDTX: *mut u32 = (UARTE0_BASE + 0x120) as *mut u32;
+const ENABLE: *mut u32 = (UARTE0_BASE + 0x500) as *mut u32;
+const PSEL_TXD: *mut u32 = (UARTE0_BASE + 0x50C) as *mut u32;
+const PSEL_RXD: *mut u32 = (UARTE0_BASE + 0x514) as *mut u32;
+const BAUDRATE: *mut u32 = (UARTE0_BASE + 0x524) as *mut u32;
+const CONFIG: *mut u32 = (UARTE0_BASE + 0x56C) as *mut u32;
+const TXD_PTR: *mut u32 = (UARTE0_BASE + 0x544) as *mut u32;
+const TXD_MAXCNT: *mut u32 = (UARTE0_BASE + 0x548) as *mut u32;
 
 /// nRF52840DK I/O implementation
 pub struct Nrf52840IO;
@@ -50,26 +46,26 @@ impl Nrf52840IO {
                 (1 << LED1_PIN) | (1 << LED2_PIN) | (1 << LED3_PIN) | (1 << LED4_PIN));
 
 
-            // // Initialize UARTE for debug output
-            // core::ptr::write_volatile(ENABLE, 0);
-            // core::ptr::write_volatile(PSEL_TXD, 6);
-            // core::ptr::write_volatile(PSEL_RXD, 8);
+            // Initialize UARTE for debug output
+            core::ptr::write_volatile(ENABLE, 0);
+            core::ptr::write_volatile(PSEL_TXD, 6);
+            core::ptr::write_volatile(PSEL_RXD, 8);
             
-            // let tx_cnf = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (6 * 4);
-            // core::ptr::write_volatile(tx_cnf as *mut u32, 0x00000003);
+            let tx_cnf = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (6 * 4);
+            core::ptr::write_volatile(tx_cnf as *mut u32, 0x00000003);
             
-            // let rx_cnf = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (8 * 4);
-            // core::ptr::write_volatile(rx_cnf as *mut u32, 0x00000000);
+            let rx_cnf = GPIO_P0_BASE + GPIO_PIN_CNF_OFFSET + (8 * 4);
+            core::ptr::write_volatile(rx_cnf as *mut u32, 0x00000000);
             
-            // core::ptr::write_volatile(BAUDRATE, 0x01D7E000);
+            core::ptr::write_volatile(BAUDRATE, 0x01D7E000);
             
-            // core::ptr::write_volatile(CONFIG, 0x00000000);
+            core::ptr::write_volatile(CONFIG, 0x00000000);
             
-            // core::ptr::write_volatile(ENABLE, 8);
+            core::ptr::write_volatile(ENABLE, 8);
  
-            // for _ in 0..10_000 {
-            //     core::arch::asm!("nop");
-            // }
+            for _ in 0..10_000 {
+                core::arch::asm!("nop");
+            }
         }
         Self
     }
@@ -108,39 +104,39 @@ impl Nrf52840IO {
         self.delay(5_000_000);
     }
 
-    fn debug_write(&self, _msg: &str) {
-        // // Copy to static buffer to ensure DMA can access it
-        // static mut UART_BUF: [u8; 256] = [0u8; 256];
+    fn debug_write(&self, msg: &str) {
+        // Copy to static buffer to ensure DMA can access it
+        static mut UART_BUF: [u8; 256] = [0u8; 256];
         
-        // unsafe {
-        //     let bytes = msg.as_bytes();
-        //     let len = bytes.len().min(256);
+        unsafe {
+            let bytes = msg.as_bytes();
+            let len = bytes.len().min(256);
             
-        //     UART_BUF[..len].copy_from_slice(&bytes[..len]);
+            UART_BUF[..len].copy_from_slice(&bytes[..len]);
             
-        //     let mut timeout = 100_000;
-        //     while core::ptr::read_volatile(EVENTS_ENDTX) == 0 && timeout > 0 {
-        //         cortex_m::asm::nop();
-        //         timeout -= 1;
-        //     }
+            let mut timeout = 100_000;
+            while core::ptr::read_volatile(EVENTS_ENDTX) == 0 && timeout > 0 {
+                cortex_m::asm::nop();
+                timeout -= 1;
+            }
             
-        //     core::ptr::write_volatile(EVENTS_ENDTX, 0);
-        //     core::ptr::write_volatile(TXD_PTR, UART_BUF.as_ptr() as u32);
-        //     core::ptr::write_volatile(TXD_MAXCNT, len as u32);
-        //     core::ptr::write_volatile(TASKS_STARTTX, 1);
+            core::ptr::write_volatile(EVENTS_ENDTX, 0);
+            core::ptr::write_volatile(TXD_PTR, UART_BUF.as_ptr() as u32);
+            core::ptr::write_volatile(TXD_MAXCNT, len as u32);
+            core::ptr::write_volatile(TASKS_STARTTX, 1);
             
-        //     timeout = 100_000;
-        //     while core::ptr::read_volatile(EVENTS_ENDTX) == 0 && timeout > 0 {
-        //         cortex_m::asm::nop();
-        //         timeout -= 1;
-        //     }
+            timeout = 100_000;
+            while core::ptr::read_volatile(EVENTS_ENDTX) == 0 && timeout > 0 {
+                cortex_m::asm::nop();
+                timeout -= 1;
+            }
             
-        //     core::ptr::write_volatile(TASKS_STOPTX, 1);
+            core::ptr::write_volatile(TASKS_STOPTX, 1);
             
-        //     for _ in 0..10_000 {
-        //         cortex_m::asm::nop();
-        //     }
-        // }
+            for _ in 0..10_000 {
+                cortex_m::asm::nop();
+            }
+        }
     }
 
     fn format_hex(&self, value: usize, buf: &mut [u8; 32]) {

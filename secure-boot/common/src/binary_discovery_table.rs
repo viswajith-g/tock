@@ -4,14 +4,14 @@
 
 //! Binaries Discovery Table (BDT) — checksum-free version
 //!
-//! Layout (4 KB @ 0x0000_8000):
-//!   [0x000] Header (16 B)
-//!   [0x010] Kernel entries   (MAX_KERNEL_ENTRIES * 16 B)
-//!   [....] App entries       (MAX_APP_ENTRIES   * 16 B)
+//! Layout (4 KB at 0x0000_8000):
+//!   [0x000] Header (16 bytes)
+//!   [0x010] Kernel entries   (MAX_KERNEL_ENTRIES * 16 bytes)
+//!   [....] App entries       (MAX_APP_ENTRIES   * 16 bytes)
 //!
 //! Ownership:
-//!   - Bootloader: writes header.magic, kernel_count, kernel_entries[]. It may zero/erase the page.
-//!   - Kernel:     appends to app_entries[] and updates app_count, **never** erases the page.
+//!   - Bootloader: writes header.magic, kernel_count, kernel_entries[]. It may erase the page.
+//!   - Kernel:     appends to app_entries[] and updates app_count, should not erases the page.
 
 use crate::error::BootError;
 use crate::types::KernelVersion;
@@ -75,7 +75,7 @@ pub struct BdtHeader {
     pub magic: [u8; 4],   // "BDTS"
     pub kernel_count: u16,
     pub app_count: u16,
-    pub reserved: [u8; 8], // pad to 16 bytes, future use (flags/version/etc.)
+    pub reserved: [u8; 8],
 }
 
 #[repr(C)]
@@ -83,7 +83,6 @@ pub struct BinariesDiscoveryTable {
     pub header: BdtHeader,
     pub kernel_entries: [BinaryEntry; MAX_KERNEL_ENTRIES],
     pub app_entries:    [BinaryEntry; MAX_APP_ENTRIES],
-    // ~3984 bytes used; ~112 B slack at end of page depending on padding
 }
 
 impl BinariesDiscoveryTable {
@@ -106,7 +105,7 @@ impl BinariesDiscoveryTable {
     #[inline(always)]
     pub fn size() -> usize { BDT_SIZE }
 
-    /// Read BDT (magic-only check).
+    /// Read BDT
     pub fn read() -> Result<&'static Self, BootError> {
         let bdt = unsafe { &*(BDT_ADDR as *const Self) };
         if bdt.header.magic != BDT_MAGIC {
@@ -115,14 +114,14 @@ impl BinariesDiscoveryTable {
         Ok(bdt)
     }
 
-    /// Iterate over valid kernel entries.
+    /// Iterate over valid kernel entries
     pub fn iter_kernel_entries(&self) -> impl Iterator<Item = &BinaryEntry> {
         self.kernel_entries[..(self.header.kernel_count as usize)]
             .iter()
             .filter(|e| e.is_sane())
     }
 
-    /// Iterate over valid app entries.
+    /// Iterate over valid app entries
     pub fn iter_app_entries(&self) -> impl Iterator<Item = &BinaryEntry> {
         self.app_entries[..(self.header.app_count as usize)]
             .iter()

@@ -22,7 +22,7 @@ pub fn write_bdt_to_flash(
         return Err(BootError::InvalidBDT);
     }
 
-    // Build BDT image in RAM
+    // Build BDT image
     let mut bdt_buffer = [0xFFu8; BDT_SIZE];
     build_bdt_in_buffer(&mut bdt_buffer, kernel_entries, kernel_count)?;
 
@@ -35,10 +35,10 @@ pub fn write_bdt_to_flash(
     Ok(())
 }
 
-/// Build the BDT image into `buffer` (expects size == BDT_SIZE).
+/// Build the BDT image into a buffer
 /// Layout:
-///   0x0000 .. 0x000F : Header (16 B)
-///   0x0010 ..        : Kernel entries (16 B each, `kernel_count`)
+///   0x0000 .. 0x000F : Header (16 bytes)
+///   0x0010 ..        : Kernel entries (16 bytes each, `kernel_count`)
 ///   ...              : Remaining bytes left as 0xFF (app section)
 fn build_bdt_in_buffer(
     buffer: &mut [u8],
@@ -52,7 +52,7 @@ fn build_bdt_in_buffer(
         return Err(BootError::InvalidBDT);
     }
 
-    // Make sure we start from an erased image (1s). Flash writes are 1->0.
+    // Start from an erased state (1)
     buffer.fill(0xFF);
 
     // Header
@@ -64,19 +64,16 @@ fn build_bdt_in_buffer(
     };
     let mut offset = write_header(buffer, &header);
 
-    // Kernel entries (bootloader-owned region)
+    // Kernel entries
     for entry in kernel_entries.iter().take(kernel_count) {
-        // Serialize entry directly after previous
         offset += write_entry(&mut buffer[offset..], entry);
     }
-
-    // Leave the rest of the page (including app entries) as 0xFF.
     Ok(())
 }
 
 #[inline(always)]
 fn write_header(buf: &mut [u8], header: &BdtHeader) -> usize {
-    // BdtHeader is exactly 16 bytes in the new format.
+    // BdtHeader is 16 bytes
     // Layout: magic[4] | kernel_count[2] | app_count[2] | reserved[8]
     buf[0..4].copy_from_slice(&header.magic);
     buf[4..6].copy_from_slice(&header.kernel_count.to_le_bytes());
@@ -87,7 +84,7 @@ fn write_header(buf: &mut [u8], header: &BdtHeader) -> usize {
 
 #[inline(always)]
 fn write_entry(buf: &mut [u8], entry: &BinaryEntry) -> usize {
-    // BinaryEntry is exactly 16 bytes.
+    // BinaryEntry is 16 bytes.
     // Layout: start[4] | size[4] | version[3] | type[1] | reserved[4]
     buf[0..4].copy_from_slice(&entry.start_address.to_le_bytes());
     buf[4..8].copy_from_slice(&entry.size.to_le_bytes());

@@ -13,8 +13,7 @@ $(SIGN_KERNEL):
 	@echo "Building signing tool"
 	cd $(SIGN_KERNEL_DIR) && cargo build --release
 
-# Override the binary creation to include signing step
-# First build the ELF, then sign it, then create the bin
+# Build the ELF, sign it, create the binary
 $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM) $(SIGN_KERNEL)
 	@echo "Signing kernel ELF"
 	$(SIGN_KERNEL) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM)

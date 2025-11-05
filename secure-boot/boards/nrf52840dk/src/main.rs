@@ -26,43 +26,6 @@ use secure_boot_common::error::BootError;
 // Include the startup assembly code
 core::arch::global_asm!(include_str!("startup.s"));
 
-// /// Minimal core::fmt::Write adapter
-// struct BufferWriter<'a> {
-//     buf: &'a mut [u8],
-//     pos: usize,
-// }
-
-// impl<'a> BufferWriter<'a> {
-//     fn new(buf: &'a mut [u8]) -> Self {
-//         Self { buf, pos: 0 }
-//     }
-
-//     fn as_str(&self) -> &str {
-//         core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("")
-//     }
-// }
-
-// impl<'a> core::fmt::Write for BufferWriter<'a> {
-//     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-//         let bytes = s.as_bytes();
-//         let len = bytes.len().min(self.buf.len().saturating_sub(self.pos));
-//         self.buf[self.pos..self.pos + len].copy_from_slice(&bytes[..len]);
-//         self.pos += len;
-//         Ok(())
-//     }
-// }
-
-// #[inline(always)]
-// fn read_reset_reason() -> u32 {
-//     const RESETREAS: *const u32 = 0x4000_0400 as *const u32;
-//     unsafe { core::ptr::read_volatile(RESETREAS) }
-// }
-// #[inline(always)]
-// fn clear_reset_reason(bits: u32) {
-//     const RESETREAS: *mut u32 = 0x4000_0400 as *mut u32;
-//     unsafe { core::ptr::write_volatile(RESETREAS, bits); }
-// }
-
 /// Main entry point called by startup code
 #[no_mangle]
 pub extern "C" fn main() -> ! {
@@ -83,6 +46,9 @@ pub extern "C" fn main() -> ! {
     //     else if reset_reason & (1<<0) != 0 { 1 }      // reset pin
     //     else { 5 };                                   // unknown/none
     // io.debug_blink(LED4_PIN, code);
+
+    // io.debug("reset reason: ");
+    // io.format(code, &mut buf);
     
     // Debug: 1 blink = bootloader started
     // io.debug_blink(LED1_PIN, 1);
@@ -99,10 +65,10 @@ pub extern "C" fn main() -> ! {
             let sp_in_sram = (0x2000_0000..0x2004_0000).contains(&sp);
             let rv_in_flash = (kernel_entry..kernel_end).contains(&(reset_vector & !1)) && (reset_vector & 1) == 1;
 
-            // io.debug_blink(
-            //     LED3_PIN,
-            //     if !sp_in_sram { 1 } else if !rv_in_flash { 2 } else { 3 },
-            // );
+            // let validity = if !sp_in_sram { 1 } else if !rv_in_flash { 2 } else { 3 };
+
+            // io.debug("sp and rv validity:");
+            // io.format(validity, &mut buf);
 
             if !(sp_in_sram && rv_in_flash){
                 io.signal_failure();
@@ -146,16 +112,6 @@ pub extern "C" fn main() -> ! {
 /// This function performs the handoff from bootloader to kernel:
 /// 1. Loads the kernel's initial stack pointer
 /// 2. Jumps to the kernel's reset handler
-
-// #[inline(always)]
-// unsafe fn set_vtor_and_verify(v: u32) -> bool {
-//     // VTOR must be 128-byte aligned on M4F
-//     if (v & 0x7F) != 0 { return false; }
-//     const SCB_VTOR: *mut u32 = 0xE000_ED08 as *mut u32;
-//     core::ptr::write_volatile(SCB_VTOR, v);
-//     core::arch::asm!("dsb; isb", options(nomem, nostack, preserves_flags));
-//     core::ptr::read_volatile(SCB_VTOR) == v
-// }
 
 unsafe fn jump_to_kernel<IO: BootloaderIO>(kernel_entry: usize, io: &IO) -> ! {
 
