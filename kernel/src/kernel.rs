@@ -534,6 +534,7 @@ impl Kernel {
                     // process. Arming the scheduler timer instructs it to
                     // generate an interrupt when the timeslice has expired. The
                     // underlying timer is not affected.
+
                     resources
                         .context_switch_callback()
                         .context_switch_hook(process);
@@ -560,6 +561,28 @@ impl Kernel {
                             }
                         }
                         Some(ContextSwitchReason::SyscallFired { syscall }) => {
+                            // unsafe {
+                            //     let gpio_p0_dirset = 0x50000518 as *mut u32;  // P0 DIRSET register
+                            //     let gpio_p0_outset = 0x50000508 as *mut u32;  // P0 OUTSET register
+                            //     let gpio_p0_outclr = 0x5000050C as *mut u32;  // P0 OUTCLR register
+                                
+                            //     gpio_p0_dirset.write_volatile(1 << 5);
+                            //     gpio_p0_outclr.write_volatile(1 << 5);
+                            //     // Final high pulse before reset
+                            //     gpio_p0_outset.write_volatile(1 << 5);
+                                
+                            //     // Immediately reset the board
+                            //     // cortexm::scb::reset();
+                            //     // Immediately reset via ARM Cortex-M System Control Block
+                            //     const SCB_AIRCR: *mut u32 = 0xE000ED0C as *mut u32;
+                            //     const AIRCR_VECTKEY: u32 = 0x05FA0000;
+                            //     const AIRCR_SYSRESETREQ: u32 = 0x00000004;
+                                
+                            //     SCB_AIRCR.write_volatile(AIRCR_VECTKEY | AIRCR_SYSRESETREQ);
+                                
+                            //     // Wait for reset to occur
+                            //     loop {}
+                            // }
                             self.handle_syscall(resources, process, syscall);
                         }
                         Some(ContextSwitchReason::Interrupted) => {

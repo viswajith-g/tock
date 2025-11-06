@@ -30,6 +30,15 @@ const CONFIG: *mut u32 = (UARTE0_BASE + 0x56C) as *mut u32;
 const TXD_PTR: *mut u32 = (UARTE0_BASE + 0x544) as *mut u32;
 const TXD_MAXCNT: *mut u32 = (UARTE0_BASE + 0x548) as *mut u32;
 
+// Timer for timestamping
+const TIMER0_BASE: usize = 0x40008000;
+const TIMER_TASKS_START: usize = TIMER0_BASE + 0x000;
+const TIMER_TASKS_CAPTURE0: usize = TIMER0_BASE + 0x040;
+const TIMER_MODE: usize = TIMER0_BASE + 0x504;
+const TIMER_BITMODE: usize = TIMER0_BASE + 0x508;
+const TIMER_PRESCALER: usize = TIMER0_BASE + 0x510;
+const TIMER_CC0: usize = TIMER0_BASE + 0x540;
+
 /// nRF52840DK I/O implementation
 pub struct Nrf52840IO;
 
@@ -44,6 +53,12 @@ impl Nrf52840IO {
             let outset_addr = GPIO_P0_BASE + GPIO_OUTSET_OFFSET;
             core::ptr::write_volatile(outset_addr as *mut u32,
                 (1 << LED1_PIN) | (1 << LED2_PIN) | (1 << LED3_PIN) | (1 << LED4_PIN));
+
+            // Initialize Timer0 for timestamps
+            core::ptr::write_volatile(TIMER_MODE as *mut u32, 0); // Timer
+            core::ptr::write_volatile(TIMER_BITMODE as *mut u32, 3); // 32-bit
+            core::ptr::write_volatile(TIMER_PRESCALER as *mut u32, 4); // 1MHz
+            core::ptr::write_volatile(TIMER_TASKS_START as *mut u32, 1);
 
 
             // Initialize UARTE for debug output
@@ -181,6 +196,53 @@ impl BootloaderIO for Nrf52840IO {
 
     fn format(&self, value: usize, buf: &mut [u8; 32]) {
         self.format_hex(value, buf);
+        self.debug_write("\r\n");
+    }
+
+    /// Get current timestamp in microseconds
+    fn now_us(&self) -> u32 {
+        unsafe {
+            // Trigger capture to CC[0]
+            core::ptr::write_volatile(TIMER_TASKS_CAPTURE0 as *mut u32, 1);
+            // Read captured value
+            core::ptr::read_volatile(TIMER_CC0 as *const u32)
+        }
+    }
+
+    fn print_elapsed(&self, label: &str, start: u32) {
+        let end = self.now_us();
+        let elapsed = end.wrapping_sub(start);
+        
+        self.debug_write(label);
+        
+        // Choose appropriate unit
+        let (value, unit) = if elapsed >= 1_000_000 {
+            (elapsed / 1_000_000, " s")
+        } else if elapsed >= 1_000 {
+            (elapsed / 1_000, " ms")
+        } else {
+            (elapsed, " us")
+        };
+        
+        // Simple decimal conversion
+        let mut buf = [0u8; 32];
+        let mut n = value;
+        let mut i = 0;
+        
+        if n == 0 {
+            buf[0] = b'0';
+            i = 1;
+        } else {
+            while n > 0 {
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                i += 1;
+            }
+            buf[..i].reverse();
+        }
+        
+        self.debug_write(unsafe { core::str::from_utf8_unchecked(&buf[..i]) });
+        self.debug_write(unit);
         self.debug_write("\r\n");
     }
 }

@@ -10,7 +10,8 @@
 use core::cell::Cell;
 
 use crate::config;
-use crate::debug;
+use crate::hil::time::Ticks;
+use crate::{debug, debug_now};
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
 use crate::hil::nonvolatile_storage::{NonvolatileStorage, NonvolatileStorageClient};
 use crate::platform::chip::Chip;
@@ -42,7 +43,7 @@ pub enum State {
 }
 
 /// Addresses of where the new process will be stored.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 struct ProcessLoadMetadata {
     new_binary_start_addr: usize,
     new_binary_length: usize,
@@ -167,6 +168,7 @@ pub struct SequentialDynamicBinaryStorage<
     process_metadata: OptionalCell<ProcessLoadMetadata>,
     state: Cell<State>,
     deferred_call: DeferredCall,
+    timestamp: Cell::<u32>,
 }
 
 impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileStorage<'b>>
@@ -186,7 +188,38 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
             process_metadata: OptionalCell::empty(),
             state: Cell::new(State::Idle),
             deferred_call: DeferredCall::new(),
+            timestamp: Cell::new(0),
         }
+    }
+
+    /// Functions to profile dbs
+    fn read_timer(&self) -> u32 {
+        debug_now!()
+    }
+
+    fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
+        let t2 = self.read_timer();
+        let t1 = timestamp.get();
+
+        timestamp.set(0);
+        let elapsed_ticks = t2.wrapping_sub(t1);
+
+        // let freq = R::frequency();
+        // debug!("Frequency value: {:?}", freq);
+        // Clock set to 1Mhz
+        let mut elapsed = (elapsed_ticks) as f32;
+
+        let mut units = "us";
+        if elapsed > 1000000.0 {
+            elapsed = elapsed * 0.000001;
+            units = "s";
+        }
+        if elapsed > 1000.0 {
+            elapsed = elapsed * 0.001;
+            units = "ms";
+        }
+
+        (elapsed, units)
     }
 
     /// Function to reset variables and states.
@@ -212,7 +245,7 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
     }
 
     /// Parse and validate kernel TLVs
-    fn check_kernel_tlvs(&self, buffer: &[u8], buffer_offset: usize) -> Result<(), ErrorCode> {
+    fn check_kernel_tlvs(&self, buffer: &[u8], _buffer_offset: usize) -> Result<(), ErrorCode> {
         let size = buffer.len();
         
         // Check sentinel
@@ -240,10 +273,10 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
             let tlv_type = u16::from_le_bytes([buffer[offset - 4], buffer[offset - 3]]);
             let tlv_len  = u16::from_le_bytes([buffer[offset - 2], buffer[offset - 1]]);
 
-            let tlv_full_size = tlv_len as usize + 4;
-            let value_start = offset - tlv_full_size;
-            let value_end   = offset - 4; // exclude the header
-            let value = &buffer[value_start .. value_end];
+            // let tlv_full_size = tlv_len as usize + 4;
+            // let value_start = offset - tlv_full_size;
+            // let value_end   = offset - 4; // exclude the header
+            // let value = &buffer[value_start .. value_end];
             
             match tlv_type {
                 KERNEL_TLV_KERNEL_FLASH => {
@@ -254,10 +287,10 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
                 }
                 KERNEL_TLV_KERNEL_VERSION => {
                     found_kernel_version = true;
-                    let mut tmp = [0u8; 16];
-                    let n = core::cmp::min(tmp.len(), value.len());
-                    tmp[..n].copy_from_slice(&value[..n]);
-                    debug!("Kernel Version TLV ({} bytes), first {}: {:02x?}", value.len(), n, &tmp[..n]);
+                    // let mut tmp = [0u8; 16];
+                    // let n = core::cmp::min(tmp.len(), value.len());
+                    // tmp[..n].copy_from_slice(&value[..n]);
+                    // debug!("Kernel Version TLV ({} bytes), first {}: {:02x?}", value.len(), n, &tmp[..n]);
                     if config::CONFIG.debug_load_processes {
                         debug!("Found Kernel Version TLV");
                     }
@@ -278,12 +311,16 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
             return Err(ErrorCode::INVAL);
         }
         
-        debug!("Kernel validation successful");
         Ok(())
     }
     
     /// Trigger system reboot
     fn reboot_system(&self) {
+        let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                debug!(
+                    "Elapsed time between kernel load and load_done: {}{}",
+                    elapsed, units
+                );
         debug!("Kernel finalized, need to reboot");
         // TODO: Implement reboot mechanism
         self.load_client.map(|client| {
@@ -349,7 +386,7 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
 
         let physical_address = self.compute_address(offset, length)?;
 
-        if let Some(mut metadata) = self.process_metadata.get() {
+        if let Some(metadata) = self.process_metadata.get() {
             if metadata.binary_type == BinaryType::App {
                 // The kernel needs to check if the app is trying to write/overwrite the
                 // header. So the app can only write to the first 8 bytes if the app is
@@ -625,6 +662,7 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
         self.process_metadata.set(ProcessLoadMetadata::default());
 
         if self.state.get() == State::Idle {
+            // self.timestamp.set(self.read_timer());
             self.state.set(State::Setup);
             match self.loader_driver.check_flash_for_new_address(binary_length) {
                 Ok((
@@ -642,11 +680,57 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                         metadata.binary_type = binary_type;
                         self.process_metadata.set(metadata);
                     }
-                    self.state.set(State::AppWrite);
-                    // Let the client know we are done setting up.
-                    self.storage_client.map(|client| {
-                        client.setup_done(Ok(()));
-                    });
+                    debug!("New binary start addr: {:#0x}", new_binary_start_address);
+                    debug!("Previous binary end addr: {:#0x}", previous_app_end_addr);
+                    debug!("Next binary start addr: {:#0x}", next_app_start_addr);
+                    debug!("New binary type: {:?}", binary_type);
+                    debug!("Padding requirement: {:?}", padding_requirement);
+                    // self.state.set(State::AppWrite);
+                    // // Let the client know we are done setting up.
+                    // self.storage_client.map(|client| {
+                    //     client.setup_done(Ok(()));
+                    // });
+                    // self.timestamp.set(self.read_timer());
+                    match padding_requirement {
+                        // If we decided we need to write a padding app after
+                        // the new app, we go ahead and do it.
+                        PaddingRequirement::PostPad | PaddingRequirement::PreAndPostPad => {
+                            // Calculating the distance between our app and
+                            // either the next app.
+                            let new_binary_end_address = new_binary_start_address + binary_length;
+                            let post_pad_length = next_app_start_addr - new_binary_end_address;
+
+                            let padding_result =
+                                self.write_padding_app(post_pad_length, new_binary_end_address);
+                            let _ = match padding_result {
+                                Ok(()) => Ok(()),
+                                Err(e) => {
+                                    // This means we were unable to write the
+                                    // padding app.
+                                    self.reset_process_loading_metadata();
+                                    Err(e)
+                                }
+                            };
+                        }
+                        // Otherwise we let the client know we are done with the
+                        // setup, and we are ready to write the app to flash.
+                        PaddingRequirement::None | PaddingRequirement::PrePad => {
+                            if let Some(mut metadata) = self.process_metadata.get() {
+                                if !metadata.setup_padding {
+                                    // Write padding header to the beginning of the new app address.
+                                    // This ensures that the linked list is not broken in the event of a
+                                    // powercycle before the app is fully written and loaded.
+
+                                    metadata.setup_padding = true;
+                                    let _ = self.write_padding_app(
+                                        metadata.new_binary_length,
+                                        metadata.new_binary_start_addr,
+                                    );
+                                    self.process_metadata.set(metadata);
+                                }
+                            }
+                        }
+                    }
                     Ok(binary_length)
                 }
                 Err(_err) => {
@@ -667,6 +751,7 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
     fn write(&self, buffer: SubSliceMut<'static, u8>, offset: usize) -> Result<(), ErrorCode> {
         match self.state.get() {
             State::AppWrite => {
+                // self.timestamp.set(self.read_timer());
                 let res = self.write_buffer(buffer, offset);
                 match res {
                     Ok(()) => Ok(()),
@@ -688,10 +773,13 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
 
     fn finalize(&self) -> Result<(), ErrorCode> {
         match self.state.get() {
+            // self.timestamp.set(self.read_timer());
             State::AppWrite => {
+                debug!("enter finalize");
                 if let Some(metadata) = self.process_metadata.get() {
                     // Check if this is a kernel binary
                     if metadata.binary_type == BinaryType::Kernel {
+                        // self.timestamp.set(self.read_timer());
                         // Validate kernel before proceeding
                         if config::CONFIG.debug_load_processes {
                             debug!("Validating kernel binary");
@@ -701,10 +789,49 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                             metadata.new_binary_length,
                         );
                     }
-                    // Else it is an app, so load that
-                    self.state.set(State::Load);
-                    self.deferred_call.set();
-                    Ok(())
+                    // // Else it is an app
+                    // self.state.set(State::Load);
+                    // self.deferred_call.set();
+                    // Ok(())
+                     match metadata.padding_requirement {
+                        // If we decided we need to write a padding app before the new
+                        // app, we go ahead and do it.
+                        PaddingRequirement::PrePad | PaddingRequirement::PreAndPostPad => {
+                            // Calculate the distance between our app and the previous
+                            // app.
+                            let previous_app_end_addr = metadata.previous_app_end_addr;
+                            let pre_pad_length =
+                                metadata.new_binary_start_addr - previous_app_end_addr;
+                            self.state.set(State::Load);
+                            let padding_result =
+                                self.write_padding_app(pre_pad_length, previous_app_end_addr);
+                            match padding_result {
+                                Ok(()) => {
+                                    if config::CONFIG.debug_load_processes {
+                                        debug!("Successfully writing prepadding app");
+                                    }
+                                    Ok(())
+                                }
+                                Err(_e) => {
+                                    // This means we were unable to write the padding
+                                    // app.
+                                    debug!("unable to write padding app");
+                                    self.reset_process_loading_metadata();
+                                    Err(ErrorCode::FAIL)
+                                }
+                            }
+                        }
+                        // We should never reach here if we are not writing a prepad
+                        // app.
+                        PaddingRequirement::None | PaddingRequirement::PostPad => {
+                            if config::CONFIG.debug_load_processes {
+                                debug!("No PrePad app to write.");
+                            }
+                            self.state.set(State::Load);
+                            self.deferred_call.set();
+                            Ok(())
+                        }
+                    }
                 }
                 else {
                     // We are in the wrong mode of operation. Ideally we should never reach
@@ -724,6 +851,7 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                 if let Some(metadata) = self.process_metadata.get() {
                     // Write padding header to the beginning of the new app address.
                     // This ensures that the flash space is reclaimed for future use.
+                    // self.timestamp.set(self.read_timer());
                     match self
                         .write_padding_app(metadata.new_binary_length, metadata.new_binary_start_addr)
                     {
@@ -761,6 +889,7 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
             State::Load => {
                 if let Some(metadata) = self.process_metadata.get() {
                     if metadata.binary_type == BinaryType::App{
+                        // self.timestamp.set(self.read_timer());
                         let _ = match self.loader_driver.load_new_process_binary(
                         metadata.new_binary_start_addr,
                         metadata.new_binary_length,
@@ -770,9 +899,11 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                             self.reset_process_loading_metadata();
                             return Err(ErrorCode::FAIL);
                         }
-                    };
-                } else{
+                    }; 
+                    }else {
+                        self.timestamp.set(self.read_timer());
                         // Trigger reboot
+                        // self.timestamp.set(self.read_timer());
                         self.reboot_system();
                     }
                 } else {

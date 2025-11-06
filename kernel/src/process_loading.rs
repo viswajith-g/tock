@@ -15,9 +15,11 @@
 use core::cell::Cell;
 use core::fmt;
 
+use crate::hil::time::Ticks;
+use crate::{debug, debug_now};
+
 use crate::capabilities::ProcessManagementCapability;
 use crate::config;
-use crate::debug;
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
 use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
@@ -315,13 +317,13 @@ fn discover_process_binary(
         .try_into()
         .or(Err((flash, ProcessBinaryError::NotEnoughFlash)))?;
 
-    let (version, header_length, app_length) =
+    let (version, header_length, binary_length) =
         match tock_tbf::parse::parse_tbf_header_lengths(header) {
             Ok((v, hl, el)) => (v, hl, el),
-            Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(app_length)) => {
+            Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(binary_length)) => {
                 // If we could not parse the header, then we want to skip over
                 // this app and look for the next one.
-                (0, 0, app_length)
+                (0, 0, binary_length)
             }
             Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
                 // Since Tock apps use a linked list, it is very possible the
@@ -336,7 +338,7 @@ fn discover_process_binary(
     // described by this tbf header.  We will either parse this as an actual
     // app, or skip over this region.
     let app_flash = flash
-        .get(0..app_length as usize)
+        .get(0..binary_length as usize)
         .ok_or((flash, ProcessBinaryError::NotEnoughFlash))?;
 
     // Advance the flash slice for process discovery beyond this last entry.
@@ -479,7 +481,7 @@ enum SequentialProcessLoaderMachineRunMode {
 }
 
 /// Enum to hold the padding requirements for a new application.
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
 pub enum PaddingRequirement {
     #[default]
     None,
@@ -646,6 +648,10 @@ pub struct SequentialProcessLoaderMachine<'a, C: Chip + 'static, D: ProcessStand
     state: OptionalCell<SequentialProcessLoaderMachineState>,
     /// Current operating mode of the loading machine.
     run_mode: OptionalCell<SequentialProcessLoaderMachineRunMode>,
+    // Store timestamp for debug
+    timestamp: Cell<u32>,
+    cred_timestamp: Cell<u32>,
+    load_timestamp: Cell<u32>,
 }
 
 impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C, D> {
@@ -681,7 +687,40 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             fault_policy,
             storage_policy,
             state: OptionalCell::empty(),
+            timestamp: Cell::new(0),
+            cred_timestamp: Cell::new(0),
+            load_timestamp: Cell::new(0),
         }
+    }
+
+    /// Debug Timer
+    fn read_timer(&self) -> u32 {
+        debug_now!()
+    }
+
+    fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
+        let t2 = self.read_timer();
+        let t1 = timestamp.get();
+
+        timestamp.set(0);
+        let elapsed_ticks = t2.wrapping_sub(t1);
+
+        // let freq = R::frequency();
+        // debug!("Frequency value: {:?}", freq);
+        // Clock set to 1Mhz
+        let mut elapsed = (elapsed_ticks) as f32;
+
+        let mut units = "us";
+        if elapsed > 1000000.0 {
+            elapsed = elapsed * 0.000001;
+            units = "s";
+        }
+        if elapsed > 1000.0 {
+            elapsed = elapsed * 0.001;
+            units = "ms";
+        }
+
+        (elapsed, units)
     }
 
     /// Set the runtime client to receive callbacks about process loading and when
@@ -711,21 +750,21 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     }
 
     /// Helper function to find the next potential aligned address for the
-    /// new app with size `app_length` assuming Cortex-M alignment rules.
-    // fn find_next_cortex_m_aligned_address(&self, address: usize, app_length: usize) -> usize {
-    //     let remaining = address % app_length;
+    /// new app with size `binary_length` assuming Cortex-M alignment rules.
+    // fn find_next_cortex_m_aligned_address(&self, address: usize, binary_length: usize) -> usize {
+    //     let remaining = address % binary_length;
     //     if remaining == 0 {
     //         address
     //     } else {
-    //         address + (app_length - remaining)
+    //         address + (binary_length - remaining)
     //     }
     // }
     fn find_next_cortex_m_aligned_address(&self, address: usize, _app_length: usize) -> usize {
-        // let remaining = address % app_length;
+        // let remaining = address % binary_length;
         // if remaining == 0 {
         //     address
         // } else {
-        //     address + (app_length - remaining)
+        //     address + (binary_length - remaining)
         // }
         const PAGE_SIZE: usize = 0x1000;
         (address + (PAGE_SIZE - 1)) & !(PAGE_SIZE - 1)
@@ -789,13 +828,20 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     }
 
     fn load_and_check(&self) {
+        self.load_timestamp.set(self.read_timer());
         match self.run_mode.get() {
             Some(SequentialProcessLoaderMachineRunMode::RuntimeMode) => {
                 // We already know exactly where the app is located
                 // Just discover and check the binary at the current flash position
-                
                 match self.discover_process_binary() {
                     Ok(pb) => {
+                        let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
+                        debug!(
+                            "Time spent in discover_process_binary: {}{}",
+                            elapsed, units
+                        );
+                        self.load_timestamp.set(self.read_timer());
+                        self.cred_timestamp.set(self.read_timer());
                         match self.checker.check(pb) {
                             Ok(()) => return, // Wait on checker response
                             Err(_e) => {
@@ -892,6 +938,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     ///
     /// This verifies that the discovered processes are valid to run.
     fn load_process_objects(&self) -> Result<(), ()> {
+         self.load_timestamp.set(self.read_timer());
         let proc_binaries = self.proc_binaries.take().ok_or(())?;
         let proc_binaries_len = proc_binaries.len();
 
@@ -947,6 +994,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                             policy.to_short_id(&process_binary)
                         });
 
+                        self.load_timestamp.set(self.read_timer());
                         // Try to create a `Process` object.
                         let load_result = load_process(
                             self.kernel,
@@ -1010,6 +1058,11 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
 
         // We have iterated all discovered `ProcessBinary`s and loaded what we
         // could so now we can signal that process loading is finished.
+        let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
+        debug!("Time spent in load_process_objects: {}{}", elapsed, units);
+        self.get_current_client().map(|client| {
+            client.process_loading_finished();
+        });
         self.get_current_client().map(|client| {
             client.process_loading_finished();
         });
@@ -1113,7 +1166,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                 // Check if we're in exclusion zone
                 if let Some(exclusion_end) = check_exclusion(addresses) {
                     // Align to next page after exclusion
-                    addresses = ((exclusion_end + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
+                    addresses = ((exclusion_end  - 1 + PAGE_SIZE) / PAGE_SIZE) * PAGE_SIZE;
                     continue;
                 }
 
@@ -1127,11 +1180,11 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                     .try_into()
                     .or(Err(ProcessBinaryError::NotEnoughFlash))?;
 
-                let (_version, header_length, app_length) =
+                let (_version, header_length, binary_length) =
                     match tock_tbf::parse::parse_tbf_header_lengths(header) {
                         Ok((v, hl, el)) => (v, hl, el),
-                        Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(app_length)) => {
-                            (0, 0, app_length)
+                        Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(binary_length)) => {
+                            (0, 0, binary_length)
                         }
                         Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
                             // Skip to next page and continue scanning
@@ -1141,7 +1194,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                     };
 
                 let app_flash = flash
-                    .get(flash_offset..flash_offset + app_length as usize)
+                    .get(flash_offset..flash_offset + binary_length as usize)
                     .ok_or(ProcessBinaryError::NotEnoughFlash)?;
 
                 let app_header = flash
@@ -1158,11 +1211,14 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
 
                 if remaining_header.len() == 0 {
                     // Padding
+                    // if config::CONFIG.debug_load_processes {
+                        // debug!("Is padding at: {:#0x}", flash_offset);
+                    // }
                 } else {
                     // This is an app binary
                     process_binaries_start_addresses[index] = app_flash.as_ptr() as usize;
                     process_binaries_end_addresses[index] =
-                        app_flash.as_ptr() as usize + app_length as usize;
+                        app_flash.as_ptr() as usize + binary_length as usize;
 
                     if config::CONFIG.debug_load_processes {
                         debug!(
@@ -1291,18 +1347,53 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     /// Change checks against process binaries instead of processes?
     fn compute_padding_requirement_and_neighbors(
         &self,
-        new_app_start_address: usize,
-        app_length: usize,
+        new_binary_start_address: usize,
+        binary_length: usize,
         process_binaries_start_addresses: &[usize],
         process_binaries_end_addresses: &[usize],
     ) -> (PaddingRequirement, usize, usize) {
         // The end address of our newly loaded application.
-        let new_app_end_address = new_app_start_address + app_length;
+        let new_binary_end_address = new_binary_start_address + binary_length;
         // To store the address until which we need to write the padding app.
-        let mut next_app_start_addr = 0;
+        let mut next_binary_start_addr = 0;
         // To store the address from which we need to write the padding app.
-        let mut previous_app_end_addr = 0;
+        let mut previous_binary_end_address = 0;
         let mut padding_requirement: PaddingRequirement = PaddingRequirement::None;
+
+        // Collect all occupied regions (16 exclusions + 10 apps)
+        let mut occupied_regions: [(usize, usize); 26] = [(0, 0); 26];
+        let mut region_count = 0;
+        
+        // Add exclusion regions (bootloader + kernels)
+        let (exclusions, exclusion_count) = self.build_exclusion_list();
+        for i in 0..exclusion_count {
+            if let Some(region) = exclusions[i] {
+                occupied_regions[region_count] = (region.start, region.end);
+                region_count += 1;
+            }
+        }
+        
+        // Add existing app regions
+        for i in 0..process_binaries_start_addresses.len() {
+            if process_binaries_start_addresses[i] != 0 {
+                occupied_regions[region_count] = (
+                    process_binaries_start_addresses[i],
+                    process_binaries_end_addresses[i]
+                );
+                region_count += 1;
+            }
+        }
+        
+        // Sort regions by start address
+        for i in 0..region_count {
+            for j in i+1..region_count {
+                if occupied_regions[j].0 < occupied_regions[i].0 {
+                    let temp = occupied_regions[i];
+                    occupied_regions[i] = occupied_regions[j];
+                    occupied_regions[j] = temp;
+                }
+            }
+        }
 
         // We compute the closest neighbor to our app such that:
         //
@@ -1314,31 +1405,66 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         //    do anything.
 
         // Postpad requirement.
-        if let Some(next_closest_neighbor) = process_binaries_start_addresses
-            .iter()
-            .filter(|&&x| x > new_app_end_address - 1)
-            .min()
-        {
-            // We found the next closest app in flash.
-            next_app_start_addr = *next_closest_neighbor;
-            if next_app_start_addr != 0 {
+        // if let Some(next_closest_neighbor) = occupied_regions.0
+        //     .iter()
+        //     .filter(|&&x| x > new_binary_end_address - 1)
+        //     .min()
+        // {
+        //     // We found the next closest app in flash.
+        //     next_binary_start_addr = *next_closest_neighbor;
+        //     if next_binary_start_addr != 0 {
+        //         padding_requirement = PaddingRequirement::PostPad;
+        //     }
+        // } else {
+        //     if config::CONFIG.debug_load_processes {
+        //         debug!("No App Found after the new app so not adding post padding.");
+        //     }
+        // }
+
+        // // Prepad requirement.
+        // if let Some(previous_closest_neighbor) = occupied_regions.1
+        //     .iter()
+        //     .filter(|&&x| x < new_binary_start_address + 1)
+        //     .max()
+        // {
+        //     // We found the previous closest app in flash.
+        //     previous_binary_end_address = *previous_closest_neighbor;
+        //     if new_binary_start_address - previous_binary_end_address != 0 {
+        //         if padding_requirement == PaddingRequirement::PostPad {
+        //             padding_requirement = PaddingRequirement::PreAndPostPad;
+        //         } else {
+        //             padding_requirement = PaddingRequirement::PrePad;
+        //         }
+        //     }
+        for i in 0..region_count {
+            let (start, _end) = occupied_regions[i];
+            if start > new_binary_end_address {
+                next_binary_start_addr = start;
                 padding_requirement = PaddingRequirement::PostPad;
+                break; // Since sorted by start, first match is the closest
             }
-        } else {
+        }
+        
+        if next_binary_start_addr == 0 {
             if config::CONFIG.debug_load_processes {
-                debug!("No App Found after the new app so not adding post padding.");
+                debug!("No region found after the new app so not adding post padding.");
             }
         }
 
-        // Prepad requirement.
-        if let Some(previous_closest_neighbor) = process_binaries_end_addresses
-            .iter()
-            .filter(|&&x| x < new_app_start_address + 1)
-            .max()
-        {
-            // We found the previous closest app in flash.
-            previous_app_end_addr = *previous_closest_neighbor;
-            if new_app_start_address - previous_app_end_addr != 0 {
+        // Prepad requirement - find previous region before our app
+        // Need to find the region with max end address < new_binary_start_address
+        for i in 0..region_count {
+            let (_start, end) = occupied_regions[i];
+            if end < new_binary_start_address {
+                // Keep updating to find the maximum end address
+                if end > previous_binary_end_address {
+                    previous_binary_end_address = end;
+                }
+            }
+        }
+        
+        if previous_binary_end_address != 0 {
+            if new_binary_start_address - previous_binary_end_address != 0 {
                 if padding_requirement == PaddingRequirement::PostPad {
                     padding_requirement = PaddingRequirement::PreAndPostPad;
                 } else {
@@ -1352,8 +1478,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         }
         (
             padding_requirement,
-            previous_app_end_addr,
-            next_app_start_addr,
+            previous_binary_end_address,
+            next_binary_start_addr,
         )
     }
 
@@ -1369,11 +1495,19 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         let total_flash_start = total_flash.as_ptr() as usize;
         let total_flash_end = total_flash_start + total_flash.len() - 1;
 
+        self.timestamp.set(self.read_timer());
+
         match self.scan_flash_for_process_binaries(total_flash, pb_start_address, pb_end_address) {
             Ok(()) => {
                 if config::CONFIG.debug_load_processes {
                     debug!("Successfully scanned flash");
                 }
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                debug!(
+                    "Time to scan flash for binary address: {}{}",
+                    elapsed, units
+                );
+                self.timestamp.set(self.read_timer());
                 // let new_app_address = match self.compute_new_process_binary_address(
                 //     new_app_size,
                 //     pb_start_address,
@@ -1387,6 +1521,11 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                 if new_app_address + new_app_size - 1 > total_flash_end {
                     Err(ProcessBinaryError::NotEnoughFlash)
                 } else {
+                    let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                    debug!(
+                        "Time to compute new process binary address: {}{}",
+                        elapsed, units
+                    );
                     Ok(new_app_address)
                 }
             }
@@ -1418,6 +1557,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             &mut pb_end_address,
         ) {
             Ok(app_address) => {
+                self.timestamp.set(self.read_timer());
                 // debug!("[pl] app_address: {:?}", app_address);
                 let (pr, prev_app_addr, next_app_addr) = self
                     .compute_padding_requirement_and_neighbors(
@@ -1426,13 +1566,15 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                         &pb_start_address,
                         &pb_end_address,
                     );
-                let (padding_requirement, previous_app_end_addr, next_app_start_addr) =
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                debug!("Time to compute padding requirement: {}{}", elapsed, units);
+                let (padding_requirement, previous_binary_end_address, next_binary_start_addr) =
                     (pr, prev_app_addr, next_app_addr);
                 Ok((
                     app_address,
                     padding_requirement,
-                    previous_app_end_addr,
-                    next_app_start_addr,
+                    previous_binary_end_address,
+                    next_binary_start_addr,
                 ))
             }
             Err(e) => Err(e),
@@ -1470,12 +1612,15 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         app_address: usize,
         app_size: usize,
     ) -> Result<(), ProcessLoadError> {
+        self.load_timestamp.set(self.read_timer());
         let flash = self.flash_bank.get();
         let process_address = app_address - flash.as_ptr() as usize;
         let process_flash = flash.get(process_address..process_address + app_size);
         let result = self.check_new_binary_validity(process_address);
         match result {
             true => {
+                let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
+                debug!("Time to check validity of new binary: {}{}", elapsed, units);
                 if config::CONFIG.debug_load_processes {
                     debug!(
                         "process address: {:#0x}, with a size: {:#00x}", 
@@ -1571,6 +1716,8 @@ impl<C: Chip, D: ProcessStandardDebug> crate::process_checker::ProcessCheckerMac
         // Check if this process was approved by the checker.
         match result {
             Ok(optional_credential) => {
+                let (elapsed, units) = self.elapsed_time(&self.cred_timestamp);
+                debug!("Time spent to check credential: {}{}", elapsed, units);
                 if config::CONFIG.debug_load_processes {
                     debug!(
                         "Loading: Check succeeded for process {}",

@@ -40,6 +40,10 @@ pub trait BootloaderIO {
     fn debug_blink(&self, _pin: u32, _count: usize) {}
 
     fn format(&self, _value: usize, _buf: &mut [u8; 32]) {}
+
+    fn now_us(&self) -> u32 { 0 }
+
+    fn print_elapsed(&self, _label: &str, _start: u32) {}
 }
 
 /// Board-specific configuration that must be provided
@@ -88,14 +92,18 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
 
     // io.debug("checking for potential candidates");
     // Scan flash for all kernels
+
+    let scan_kernel_start = io.now_us();
     let potential_kernels = locate_tlvs::scan_for_potential_kernels(
         C::AVAILABLE_FLASH_START,
         C::AVAILABLE_FLASH_END,
         io,
     )?;
+    io.print_elapsed("Time elapsed in scanning for kernels: ", scan_kernel_start);
     
     
     // Extract versions from each kernel
+    let kernels_version_extract = io.now_us();
     let mut candidates: [Option<KernelCandidate>; 8] = [None; 8];
     let mut candidate_count = 0;
     
@@ -113,6 +121,8 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
             }
         }
     }
+    io.print_elapsed("Time elapsed in extracting versions from kernels: : ", kernels_version_extract);
+
     
     if candidate_count == 0 {
         // io.debug("No candidates found");
@@ -122,9 +132,14 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     // io.debug("sorting candidates by version");
     
     // Sort candidates by version
+    let sorting_time = io.now_us();
     sort_candidates_by_version(&mut candidates, candidate_count);
+
+    io.print_elapsed("Time elapsed in sorting kernels: ", sorting_time);
     
     // Try to verify and boot kernels in order
+    
+    let candidate_selection_time = io.now_us();
     let mut selected_kernel = None;
 
     for i in 0..candidate_count {
@@ -143,12 +158,14 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
 
     let selected_kernel = selected_kernel.ok_or(BootError::NoValidKernel)?;
 
+    io.print_elapsed("Time elapsed in selecting kernel: ", candidate_selection_time);
+
     // Check if kernel requires to be relocated
-    let _ = attributes_parser::parse_attributes(
-        selected_kernel.attributes_start,
-        selected_kernel.attributes_end,
-        io
-    )?;
+    // let _ = attributes_parser::parse_attributes(
+    //     selected_kernel.attributes_start,
+    //     selected_kernel.attributes_end,
+    //     io
+    // )?;
     
     // if let Some(reloc_info) = attributes.relocation {
     //     let link_addr = reloc_info.link_address as usize;
@@ -173,6 +190,7 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     //     // io.debug("No relocation TLV found (old kernel?)");
     // }
     
+    let bdt_time = io.now_us();
     // Build discovery table with found kernels
     let mut kernel_entries = [BinaryEntry::empty(); 8];
     for i in 0..candidate_count {
@@ -190,9 +208,12 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
             };
         }
     }
-
+    io.print_elapsed("Time elapsed in building binary discovery table: ", bdt_time);
     // Write discovery table to flash
+    let bdt_write_time = io.now_us();
     table_writer::write_bdt_to_flash(&kernel_entries, candidate_count)?;
+    io.print_elapsed("Time elapsed in writing bdt to flash: ", bdt_write_time);
+    
 
     // Return to main
 
@@ -234,12 +255,15 @@ pub fn verify_single_kernel<C: BoardConfig, IO: BootloaderIO>(
     // Verify and Boot entered
     // let mut buf = [0u8; 32];
 
+    let attributes_time = io.now_us();
     // Parsing attributes
     let attributes = attributes_parser::parse_attributes(
         kernel.attributes_start,
         kernel.attributes_end,
         io,
     )?;
+
+    io.print_elapsed("Time elapsed in parsing Kernel attributes: ", attributes_time);
 
     // Finding signature
     // io.debug_blink(15, 4);
@@ -273,14 +297,19 @@ pub fn verify_single_kernel<C: BoardConfig, IO: BootloaderIO>(
     // io.format(sig_start, &mut buf);
 
     // Compute hash
+    let hash_time = io.now_us();
     let hash = compute_hash::compute_kernel_hash(
         &region,
         &signature,
         kernel.attributes_end,
     )?;
 
+    io.print_elapsed("Time elapsed in computing hash: ", hash_time);
+
     // Verify signature
+    let signature_time = io.now_us();
     signature_verifier::verify_signature::<C, IO>(&hash, &signature, io)?;
+    io.print_elapsed("Time elapsed in verifying signature: ", signature_time);
 
     // Verification success
     Ok(())

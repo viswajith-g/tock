@@ -23,6 +23,36 @@ use secure_boot_common::error::BootError;
 // const LED3_PIN: u32 = 15; // P0.15
 // const LED4_PIN: u32 = 16; // P0.16
 
+struct BootloaderTimer;
+
+impl BootloaderTimer {
+    unsafe fn init() -> Self {
+        const TIMER0_BASE: usize = 0x40008000;
+        let timer_mode = (TIMER0_BASE + 0x504) as *mut u32;
+        let timer_bitmode = (TIMER0_BASE + 0x508) as *mut u32;
+        let timer_prescaler = (TIMER0_BASE + 0x510) as *mut u32;
+        let timer_start = (TIMER0_BASE + 0x000) as *mut u32;
+        
+        timer_mode.write_volatile(0);
+        timer_bitmode.write_volatile(3);
+        timer_prescaler.write_volatile(4);
+        timer_start.write_volatile(1);
+        
+        BootloaderTimer
+    }
+    
+    fn now(&self) -> u32 {
+        unsafe {
+            const TIMER0_BASE: usize = 0x40008000;
+            let capture = (TIMER0_BASE + 0x040) as *mut u32;
+            let cc0 = (TIMER0_BASE + 0x540) as *const u32;
+            
+            capture.write_volatile(1);
+            cc0.read_volatile()
+        }
+    }
+}
+
 // Include the startup assembly code
 core::arch::global_asm!(include_str!("startup.s"));
 
@@ -31,6 +61,14 @@ core::arch::global_asm!(include_str!("startup.s"));
 pub extern "C" fn main() -> ! {
     // Initialize I/O
     let io = Nrf52840IO::new();
+    // unsafe{
+    //     let gpio_p0_dirset = 0x50000518 as *mut u32;  // P0 DIRSET register
+    //     let gpio_p0_outset = 0x50000508 as *mut u32;  // P0 OUTSET register
+    //     let gpio_p0_outclr = 0x5000050C as *mut u32;  // P0 OUTCLR register
+        
+    //     gpio_p0_dirset.write_volatile(1 << 5);
+    //     gpio_p0_outclr.write_volatile(1 << 5);
+    // }
     // io.debug("\r\n\r\n");
     // io.debug("Secure Boot for Tock");
 

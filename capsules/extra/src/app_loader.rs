@@ -78,6 +78,9 @@ use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::{ErrorCode, ProcessId};
 
+use kernel::hil::time::Ticks;
+use kernel::{debug, debug_now};
+
 /// Syscall driver number.
 use capsules_core::driver;
 pub const DRIVER_NUM: usize = driver::NUM::AppLoader as usize;
@@ -135,6 +138,7 @@ pub struct AppLoader<
     // What issued the currently executing call.
     current_process: OptionalCell<ProcessId>,
     new_app_length: Cell<usize>,
+    timestamp: Cell<u32>,
 }
 
 impl<
@@ -160,7 +164,38 @@ impl<
             buffer: TakeCell::new(buffer),
             current_process: OptionalCell::empty(),
             new_app_length: Cell::new(0),
+            timestamp: Cell::new(0),
         }
+    }
+
+    // Debug Timer
+    fn read_timer(&self) -> u32 {
+        debug_now!()
+    }
+
+    fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
+        let t2 = self.read_timer();
+        let t1 = timestamp.get();
+
+        timestamp.set(0);
+        let elapsed_ticks = t2.wrapping_sub(t1);
+
+        // let freq = R::frequency();
+        // debug!("Frequency value: {:?}", freq);
+        // Clock set to 1Mhz
+        let mut elapsed = (elapsed_ticks) as f32;
+
+        let mut units = "us";
+        if elapsed > 1000000.0 {
+            elapsed = elapsed * 0.000001;
+            units = "s";
+        }
+        if elapsed > 1000.0 {
+            elapsed = elapsed * 0.001;
+            units = "ms";
+        }
+
+        (elapsed, units)
     }
 
     /// Copy data from the shared buffer with app and request kernel to
@@ -246,6 +281,11 @@ impl<
         self.current_process.map(|processid| {
             let _ = self.apps.enter(processid, move |app, kernel_data| {
                 app.pending_command = false;
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                debug!(
+                    "Elapsed time between setup and setup_done: {}{}",
+                    elapsed, units
+                );
                 // Signal the app.
                 let _ = kernel_data
                     .schedule_upcall(upcall::SETUP_DONE, (into_statuscode(result), 0, 0));
@@ -262,6 +302,12 @@ impl<
                 self.buffer.replace(buffer);
                 app.pending_command = false;
 
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                debug!(
+                    "Elapsed time between write and write_done: {}{}",
+                    elapsed, units
+                );
+
                 // And then signal the app.
                 let _ = kernel_data
                     .schedule_upcall(upcall::WRITE_DONE, (into_statuscode(result), length, 0));
@@ -276,6 +322,12 @@ impl<
                 // And then signal the app.
                 app.pending_command = false;
 
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                debug!(
+                    "Elapsed time between finalize and finalize_done: {}{}",
+                    elapsed, units
+                );
+
                 self.current_process.take();
                 let _ = kernel_data
                     .schedule_upcall(upcall::FINALIZE_DONE, (into_statuscode(result), 0, 0));
@@ -289,6 +341,12 @@ impl<
             let _ = self.apps.enter(processid, move |app, kernel_data| {
                 // And then signal the app.
                 app.pending_command = false;
+
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                debug!(
+                    "Elapsed time between abort and abort_done: {}{}",
+                    elapsed, units
+                );
 
                 self.current_process.take();
                 let _ = kernel_data
@@ -336,6 +394,11 @@ impl<
         self.current_process.map(|processid| {
             let _ = self.apps.enter(processid, move |app, kernel_data| {
                 app.pending_command = false;
+                let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                debug!(
+                    "Elapsed time between app load and load_done: {}{}",
+                    elapsed, units
+                );
                 // Signal the app.
                 self.current_process.take();
                 let _ = kernel_data
@@ -433,6 +496,7 @@ impl<
             1 => {
                 // Request kernel to allocate resources for
                 // a new binary with size passed via `arg1`.
+                self.timestamp.set(self.read_timer());
                 let binary_type = match arg2 {
                     1 => dynamic_binary_storage::BinaryType::Kernel,
                     _ => dynamic_binary_storage::BinaryType::App,
@@ -453,6 +517,7 @@ impl<
 
             2 => {
                 // Request kernel to write app to flash.
+                self.timestamp.set(self.read_timer());
                 let res = self.write(arg1, arg2, processid);
                 match res {
                     Ok(()) => CommandReturn::success(),
@@ -472,6 +537,7 @@ impl<
 
             3 => {
                 // Signal to kernel writing is done.
+                self.timestamp.set(self.read_timer());
                 let result = self.storage_driver.finalize();
                 match result {
                     Ok(()) => CommandReturn::success(),
@@ -485,6 +551,7 @@ impl<
 
             4 => {
                 // Request kernel to load the new app.
+                self.timestamp.set(self.read_timer());
                 let res = self.load_driver.load();
                 match res {
                     Ok(()) => {
@@ -501,6 +568,7 @@ impl<
 
             5 => {
                 // Request kernel to abort setup/write operation.
+                self.timestamp.set(self.read_timer());
                 let result = self.storage_driver.abort();
                 match result {
                     Ok(()) => {

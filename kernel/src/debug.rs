@@ -113,6 +113,7 @@ use crate::utilities::cells::NumericCellExt;
 use crate::utilities::cells::{MapCell, TakeCell};
 use crate::utilities::single_thread_value::SingleThreadValue;
 use crate::ErrorCode;
+use crate::hil::time::{Freq1MHz, Ticks32, Time};
 
 /// Implementation of `std::io::Write` for `no_std`.
 ///
@@ -342,6 +343,39 @@ macro_rules! debug_gpio {
         #[allow(unused_unsafe)]
         unsafe {
             $crate::debug::DEBUG_GPIOS.$i.map(|g| g.$method());
+        }
+    }};
+}
+
+///////////////////////////////////////////////////////////////////
+// debug_timer! support
+
+/// Optional globally shared debug timer.
+pub static mut DEBUG_TIMER: Option<&'static dyn Time<Frequency = Freq1MHz, Ticks = Ticks32>> = None;
+
+/// Assign the debug timer globally.
+pub unsafe fn assign_debug_timer(timer: &'static dyn Time<Frequency = Freq1MHz, Ticks = Ticks32>) {
+    DEBUG_TIMER = Some(timer);
+}
+
+#[macro_export]
+macro_rules! debug_timer {
+    ($method:ident $(,)?) => {{
+        #[allow(unused_unsafe)]
+        unsafe {
+            $crate::debug::DEBUG_TIMER.map(|t| t.$method())
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! debug_now {
+    () => {{
+        #[allow(unused_unsafe)]
+        unsafe {
+            $crate::debug::DEBUG_TIMER
+                .map(|t| t.now().into_u32())
+                .unwrap_or(0)
         }
     }};
 }

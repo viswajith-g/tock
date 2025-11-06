@@ -19,6 +19,7 @@ use kernel::{capabilities, create_capability, static_init};
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
 use nrf52_components::{UartChannel, UartPins};
+use nrf52840::timer::TimerAlarm;
 
 // The nRF52840DK LEDs (see back of board)
 const LED1_PIN: Pin = Pin::P0_13;
@@ -261,6 +262,16 @@ pub unsafe fn main() {
         mux_alarm,
     )
     .finalize(components::alarm_component_static!(nrf52840::rtc::Rtc));
+
+    //--------------------------------------------------------------------------
+    // Timer 1 instantiation
+    //--------------------------------------------------------------------------
+    let timer0 = static_init!(TimerAlarm<'static>, TimerAlarm::new(0));
+    timer0.start();
+
+    unsafe {
+        kernel::debug::assign_debug_timer(timer0);
+    }
 
     //--------------------------------------------------------------------------
     // UART & CONSOLE & DEBUG
