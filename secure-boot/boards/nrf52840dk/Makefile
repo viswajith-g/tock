@@ -53,6 +53,7 @@ build:
 	@echo "  BIN: $(BIN_FILE)"
 	@echo ""
 	@ls -lh $(BIN_FILE) | awk '{print "  " $$9 ": " $$5}'
+# 	@$(SIZE) $(ELF_FILE)
 
 
 # Default target for installing the bootloader

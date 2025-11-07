@@ -23,35 +23,35 @@ use secure_boot_common::error::BootError;
 // const LED3_PIN: u32 = 15; // P0.15
 // const LED4_PIN: u32 = 16; // P0.16
 
-struct BootloaderTimer;
+// struct BootloaderTimer;
 
-impl BootloaderTimer {
-    unsafe fn init() -> Self {
-        const TIMER0_BASE: usize = 0x40008000;
-        let timer_mode = (TIMER0_BASE + 0x504) as *mut u32;
-        let timer_bitmode = (TIMER0_BASE + 0x508) as *mut u32;
-        let timer_prescaler = (TIMER0_BASE + 0x510) as *mut u32;
-        let timer_start = (TIMER0_BASE + 0x000) as *mut u32;
+// impl BootloaderTimer {
+//     unsafe fn init() -> Self {
+//         const TIMER0_BASE: usize = 0x40008000;
+//         let timer_mode = (TIMER0_BASE + 0x504) as *mut u32;
+//         let timer_bitmode = (TIMER0_BASE + 0x508) as *mut u32;
+//         let timer_prescaler = (TIMER0_BASE + 0x510) as *mut u32;
+//         let timer_start = (TIMER0_BASE + 0x000) as *mut u32;
         
-        timer_mode.write_volatile(0);
-        timer_bitmode.write_volatile(3);
-        timer_prescaler.write_volatile(4);
-        timer_start.write_volatile(1);
+//         timer_mode.write_volatile(0);
+//         timer_bitmode.write_volatile(3);
+//         timer_prescaler.write_volatile(4);
+//         timer_start.write_volatile(1);
         
-        BootloaderTimer
-    }
+//         BootloaderTimer
+//     }
     
-    fn now(&self) -> u32 {
-        unsafe {
-            const TIMER0_BASE: usize = 0x40008000;
-            let capture = (TIMER0_BASE + 0x040) as *mut u32;
-            let cc0 = (TIMER0_BASE + 0x540) as *const u32;
+//     fn now(&self) -> u32 {
+//         unsafe {
+//             const TIMER0_BASE: usize = 0x40008000;
+//             let capture = (TIMER0_BASE + 0x040) as *mut u32;
+//             let cc0 = (TIMER0_BASE + 0x540) as *const u32;
             
-            capture.write_volatile(1);
-            cc0.read_volatile()
-        }
-    }
-}
+//             capture.write_volatile(1);
+//             cc0.read_volatile()
+//         }
+//     }
+// }
 
 // Include the startup assembly code
 core::arch::global_asm!(include_str!("startup.s"));
