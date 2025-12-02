@@ -8,6 +8,8 @@
 #![no_main]
 #![deny(missing_docs)]
 
+use core::ptr::addr_of;
+
 use kernel::component::Component;
 use kernel::hil::led::LedLow;
 use kernel::hil::time::Counter;
@@ -19,7 +21,7 @@ use kernel::{capabilities, create_capability, static_init};
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
 use nrf52_components::{UartChannel, UartPins};
-use nrf52840::timer::TimerAlarm;
+// use nrf52840dk_lib::{self, NUM_PROCS};
 
 // The nRF52840DK LEDs (see back of board)
 const LED1_PIN: Pin = Pin::P0_13;
@@ -67,7 +69,18 @@ kernel::stack_size! {0x2000}
 
 type AlarmDriver = components::alarm::AlarmDriverComponentType<nrf52840::rtc::Rtc<'static>>;
 
-type NonVolatilePages = components::dynamic_binary_storage::NVPages<nrf52840::nvmc::Nvmc>;
+type FlashUser =
+    capsules_core::virtualizers::virtual_flash::FlashUser<'static, nrf52840::nvmc::Nvmc>;
+type NonVolatilePages = components::dynamic_binary_storage::NVPages<FlashUser>;
+
+type IsolatedNonvolatileStorageDriver =
+    capsules_extra::isolated_nonvolatile_storage_driver::IsolatedNonvolatileStorage<
+        'static,
+        {
+            components::isolated_nonvolatile_storage::ISOLATED_NONVOLATILE_STORAGE_APP_REGION_SIZE_DEFAULT
+        },
+    >;
+    
 type DynamicBinaryStorage<'a> = kernel::dynamic_binary_storage::SequentialDynamicBinaryStorage<
     'static,
     'static,
@@ -75,6 +88,23 @@ type DynamicBinaryStorage<'a> = kernel::dynamic_binary_storage::SequentialDynami
     kernel::process::ProcessStandardDebugFull,
     NonVolatilePages,
 >;
+
+type Ieee802154RawDriver =
+    components::ieee802154::Ieee802154RawComponentType<nrf52840::ieee802154_radio::Radio<'static>>;
+
+// EUI64
+/// Userspace EUI64 driver.
+type Eui64Driver = components::eui64::Eui64ComponentType;
+
+// fn create_short_id_from_name(name: &str, metadata: u8) -> kernel::process::ShortId {
+//     let sum = kernel::utilities::helpers::crc32_posix(name.as_bytes());
+
+//     // Combine the metadata and CRC into the short id.
+//     let sid = ((metadata as u32) << 28) | (sum & 0xFFFFFFF);
+
+//     core::num::NonZeroU32::new(sid).into()
+// }
+
 
 /// Supported drivers by the platform
 pub struct Platform {
@@ -86,14 +116,18 @@ pub struct Platform {
         kernel::hil::led::LedLow<'static, nrf52840::gpio::GPIOPin<'static>>,
         4,
     >,
+    ambient_light: &'static capsules_extra::ambient_light::AmbientLight<'static>,
     alarm: &'static AlarmDriver,
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
     processes: &'static ProcessArray<NUM_PROCS>,
+    nonvolatile_storage: &'static IsolatedNonvolatileStorageDriver,
     dynamic_app_loader: &'static capsules_extra::app_loader::AppLoader<
         DynamicBinaryStorage<'static>,
         DynamicBinaryStorage<'static>,
     >,
+    ieee802154: &'static Ieee802154RawDriver,
+    eui64: &'static Eui64Driver,
 }
 
 impl SyscallDriverLookup for Platform {
@@ -105,8 +139,14 @@ impl SyscallDriverLookup for Platform {
             capsules_core::console::DRIVER_NUM => f(Some(self.console)),
             capsules_core::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules_core::led::DRIVER_NUM => f(Some(self.led)),
+            capsules_extra::ambient_light::DRIVER_NUM => f(Some(self.ambient_light)),
             capsules_core::button::DRIVER_NUM => f(Some(self.button)),
             capsules_core::adc::DRIVER_NUM => f(Some(self.adc)),
+            capsules_extra::eui64::DRIVER_NUM => f(Some(self.eui64)),
+            capsules_extra::ieee802154::DRIVER_NUM => f(Some(self.ieee802154)),
+            capsules_extra::isolated_nonvolatile_storage_driver::DRIVER_NUM => {
+                f(Some(self.nonvolatile_storage))
+            }
             capsules_extra::app_loader::DRIVER_NUM => f(Some(self.dynamic_app_loader)),
             _ => f(None),
         }
@@ -127,6 +167,7 @@ unsafe fn create_peripherals() -> &'static mut Nrf52840DefaultPeripherals<'stati
         Nrf52840DefaultPeripherals,
         Nrf52840DefaultPeripherals::new(ieee802154_ack_buf)
     );
+
     nrf52840_peripherals
 }
 
@@ -179,46 +220,12 @@ impl kernel::process::ProcessLoadingAsyncClient for Platform {
     }
 }
 
-#[inline(always)]
-unsafe fn dwt_enable_cyccnt() {
-    const DEMCR: *mut u32      = 0xE000_EDFC as *mut u32; // Debug Exception and Monitor Control
-    const DWT_CTRL: *mut u32   = 0xE000_1000 as *mut u32; // DWT Control
-    const DWT_CYCCNT: *mut u32 = 0xE000_1004 as *mut u32; // Cycle Counter
-
-    // Enable trace (TRCENA) so DWT works
-    core::ptr::write_volatile(DEMCR,
-        core::ptr::read_volatile(DEMCR) | (1 << 24));
-
-    // Reset and enable the cycle counter
-    core::ptr::write_volatile(DWT_CYCCNT, 0);
-    core::ptr::write_volatile(DWT_CTRL,
-        core::ptr::read_volatile(DWT_CTRL) | 1);
-}
-
-#[inline(always)]
-unsafe fn dwt_get_cycles() -> u32 {
-    const DWT_CYCCNT: *const u32 = 0xE000_1004 as *const u32;
-    core::ptr::read_volatile(DWT_CYCCNT)
-}
-
-#[inline(always)]
-fn cycles_to_us(cycles: u64) -> u64 {
-    // nRF52840 runs the core at 64 MHz in Tock
-    const CORE_HZ: u64 = 64_000_000;
-    (cycles * 1_000_000) / CORE_HZ
-}
-
 /// Main function called after RAM initialized.
 #[no_mangle]
 pub unsafe fn main() {
     //--------------------------------------------------------------------------
     // INITIAL SETUP
     //--------------------------------------------------------------------------
-
-    // ----- measure start -----
-    dwt_enable_cyccnt();
-    let boot_cycles_start: u32 = dwt_get_cycles();
-    // -------------------------
 
     // Apply errata fixes and enable interrupts.
     nrf52840::init();
@@ -270,9 +277,9 @@ pub unsafe fn main() {
     // functions.
     let main_loop_capability = create_capability!(capabilities::MainLoopCapability);
 
-    //--------------------------------------------------------------------------
-    // LEDs
-    //--------------------------------------------------------------------------
+    // //--------------------------------------------------------------------------
+    // // LEDs
+    // //--------------------------------------------------------------------------
 
     let led = components::led::LedsComponent::new().finalize(components::led_component_static!(
         LedLow<'static, nrf52840::gpio::GPIOPin>,
@@ -297,12 +304,24 @@ pub unsafe fn main() {
     )
     .finalize(components::alarm_component_static!(nrf52840::rtc::Rtc));
 
-    // //--------------------------------------------------------------------------
-    // // Timer 1 instantiation
-    // //--------------------------------------------------------------------------
-    // let timer0 = static_init!(TimerAlarm<'static>, TimerAlarm::new(0));
-    // timer0.start();
-    // kernel::debug::assign_debug_timer(timer0);!
+    //--------------------------------------------------------------------------
+    // RAW 802.15.4
+    //--------------------------------------------------------------------------
+
+    let device_id = (*addr_of!(nrf52840::ficr::FICR_INSTANCE)).id();
+
+    let eui64 = components::eui64::Eui64Component::new(u64::from_le_bytes(device_id))
+        .finalize(components::eui64_component_static!());
+
+    let ieee802154 = components::ieee802154::Ieee802154RawComponent::new(
+        board_kernel,
+        capsules_extra::ieee802154::DRIVER_NUM,
+        &nrf52840_peripherals.ieee802154_radio,
+    )
+    .finalize(components::ieee802154_raw_component_static!(
+        nrf52840::ieee802154_radio::Radio,
+    ));
+
     //--------------------------------------------------------------------------
     // UART & CONSOLE & DEBUG
     //--------------------------------------------------------------------------
@@ -356,6 +375,44 @@ pub unsafe fn main() {
     .finalize(components::debug_writer_component_static!());
 
     //--------------------------------------------------------------------------
+    // VIRTUAL FLASH
+    //--------------------------------------------------------------------------
+
+    let mux_flash = components::flash::FlashMuxComponent::new(&nrf52840_peripherals.nrf52.nvmc)
+        .finalize(components::flash_mux_component_static!(
+            nrf52840::nvmc::Nvmc
+        ));
+
+    // Create a virtual flash user for dynamic binary storage
+    let virtual_flash_dbs = components::flash::FlashUserComponent::new(mux_flash).finalize(
+        components::flash_user_component_static!(nrf52840::nvmc::Nvmc),
+    );
+
+    // Create a virtual flash user for nonvolatile
+    let virtual_flash_nvm = components::flash::FlashUserComponent::new(mux_flash).finalize(
+        components::flash_user_component_static!(nrf52840::nvmc::Nvmc),
+    );
+
+    //--------------------------------------------------------------------------
+    // NONVOLATILE STORAGE
+    //--------------------------------------------------------------------------
+
+    // 32kB of userspace-accessible storage, page aligned:
+    kernel::storage_volume!(APP_STORAGE, 32);
+
+    let nonvolatile_storage = components::isolated_nonvolatile_storage::IsolatedNonvolatileStorageComponent::new(
+        board_kernel,
+        capsules_extra::isolated_nonvolatile_storage_driver::DRIVER_NUM,
+        virtual_flash_nvm,
+        core::ptr::addr_of!(APP_STORAGE) as usize,
+        APP_STORAGE.len()
+    )
+    .finalize(components::isolated_nonvolatile_storage_component_static!(
+        capsules_core::virtualizers::virtual_flash::FlashUser<'static, nrf52840::nvmc::Nvmc>,
+        { components::isolated_nonvolatile_storage::ISOLATED_NONVOLATILE_STORAGE_APP_REGION_SIZE_DEFAULT }
+    ));
+
+    //--------------------------------------------------------------------------
     // BUTTONS
     //--------------------------------------------------------------------------
 
@@ -390,9 +447,9 @@ pub unsafe fn main() {
         nrf52840::gpio::GPIOPin
     ));
 
-    //--------------------------------------------------------------------------
-    // ADC
-    //--------------------------------------------------------------------------
+    // //--------------------------------------------------------------------------
+    // // ADC
+    // //--------------------------------------------------------------------------
 
     let adc_channels = static_init!(
         [nrf52840::adc::AdcChannelSetup; 6],
@@ -421,17 +478,48 @@ pub unsafe fn main() {
 
     nrf52_components::NrfClockComponent::new(&base_peripherals.clock).finalize(());
 
+
+    let i2c_bus = components::i2c::I2CMuxComponent::new(&nrf52840_peripherals.nrf52.twi1, None)
+        .finalize(components::i2c_mux_component_static!(nrf52840::i2c::TWI));
+
+    // Configure the ISL29035, device address 0x44
+    let isl29035 = components::isl29035::Isl29035Component::new(i2c_bus, mux_alarm).finalize(
+        components::isl29035_component_static!(nrf52840::rtc::Rtc, nrf52840::i2c::TWI),
+    );
+    let ambient_light = components::isl29035::AmbientLightComponent::new(
+        board_kernel,
+        capsules_extra::ambient_light::DRIVER_NUM,
+        isl29035,
+    )
+    .finalize(components::ambient_light_component_static!());
+
     //--------------------------------------------------------------------------
     // Credential Checking
     //--------------------------------------------------------------------------
 
+    // // Create the credential checker.
+    // let checking_policy = components::appid::checker_null::AppCheckerNullComponent::new()
+    //     .finalize(components::app_checker_null_component_static!());
+
+    // // Create the AppID assigner.
+    // let assigner = components::appid::assigner_tbf::AppIdAssignerTbfHeaderComponent::new()
+    //     .finalize(components::appid_assigner_tbf_header_component_static!());
+
+    // // Create the process checking machine.
+    // let checker = components::appid::checker::ProcessCheckerMachineComponent::new(checking_policy)
+    //     .finalize(components::process_checker_machine_component_static!());
+
+    // Create the software-based SHA engine.
+    let sha = components::sha::ShaSoftware256Component::new()
+        .finalize(components::sha_software_256_component_static!());
+
     // Create the credential checker.
-    let checking_policy = components::appid::checker_null::AppCheckerNullComponent::new()
-        .finalize(components::app_checker_null_component_static!());
+    let checking_policy = components::appid::checker_sha::AppCheckerSha256Component::new(sha)
+        .finalize(components::app_checker_sha256_component_static!());
 
     // Create the AppID assigner.
-    let assigner = components::appid::assigner_tbf::AppIdAssignerTbfHeaderComponent::new()
-        .finalize(components::appid_assigner_tbf_header_component_static!());
+    let assigner = components::appid::assigner_name::AppIdAssignerNamesComponent::new()
+        .finalize(components::appid_assigner_names_component_static!());
 
     // Create the process checking machine.
     let checker = components::appid::checker::ProcessCheckerMachineComponent::new(checking_policy)
@@ -449,32 +537,27 @@ pub unsafe fn main() {
             ),
         );
 
+
     // These symbols are defined in the standard Tock linker script.
     extern "C" {
+        /// Beginning of the ROM region containing app images.
+        static _sapps: u8;
+        /// End of the ROM region containing app images.
+        static _eapps: u8;
         /// Beginning of the RAM region for app memory.
         static mut _sappmem: u8;
         /// End of the RAM region for app memory.
         static _eappmem: u8;
     }
 
-    // We cannot trust _sapps and _eapps because _sapps could be from wherever
-    // the kernel ends based on its linker layout, so we hardcode the entire
-    // flash range for the nrf52840dk. The loader will take care of regions 
-    // that should be skipped.
-    const FLASH_START: usize = 0x000000;
-    const FLASH_END:   usize = 0x100000;
-
     let app_flash = core::slice::from_raw_parts(
-            FLASH_START as *const u8,
-            FLASH_END - FLASH_START,
-        );
-
+        core::ptr::addr_of!(_sapps),
+        core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
+    );
     let app_memory = core::slice::from_raw_parts_mut(
         core::ptr::addr_of_mut!(_sappmem),
         core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
     );
-
-    // kernel::debug!("Kernel Version: {}.{}", kernel::KERNEL_MAJOR_VERSION, kernel::KERNEL_MINOR_VERSION);
 
     // Create and start the asynchronous process loader.
     let loader = components::loader::sequential::ProcessLoaderSequentialComponent::new(
@@ -500,11 +583,11 @@ pub unsafe fn main() {
     // Create the dynamic binary flasher.
     let dynamic_binary_storage =
         components::dynamic_binary_storage::SequentialBinaryStorageComponent::new(
-            &base_peripherals.nvmc,
+            virtual_flash_dbs,
             loader,
         )
         .finalize(components::sequential_binary_storage_component_static!(
-            nrf52840::nvmc::Nvmc,
+            FlashUser,
             nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
             kernel::process::ProcessStandardDebugFull,
         ));
@@ -535,26 +618,20 @@ pub unsafe fn main() {
             button,
             adc,
             led,
+            ambient_light,
             alarm,
             scheduler,
             systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
             processes,
+            nonvolatile_storage,
             dynamic_app_loader,
+            eui64,
+            ieee802154,
         }
     );
     loader.set_client(platform);
 
     let _ = pconsole.start();
-
-    // ----- compute & print boot time just before entering kernel loop -----
-    let boot_cycles_end: u32 = dwt_get_cycles();
-    let delta = boot_cycles_end.wrapping_sub(boot_cycles_start) as u64;
-    let boot_us = cycles_to_us(delta);
-    kernel::debug!(
-        "Boot path time (main() -> kernel_loop): {} us ({} cycles @64MHz)",
-        boot_us, delta
-    );
-    // ---------------------------------------------------------------------
 
     board_kernel.kernel_loop(
         platform,
