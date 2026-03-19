@@ -115,6 +115,10 @@ pub trait DynamicProcessLoad {
     /// Call to request kernel to load a new process.
     fn load(&self) -> Result<(), ErrorCode>;
 
+    /// Load a process directly from an XIP-mapped address,
+    /// bypassing the setup/write/finalize flash-writing pipeline.
+    fn load_xip(&self, address: usize, size: usize) -> Result<(), ErrorCode>;
+
     /// Sets a client for the SequentialDynamicProcessLoading Object
     ///
     /// When the client operation is done, it calls the `load_done()`
@@ -671,4 +675,28 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
             _ => Err(ErrorCode::INVAL),
         }
     }
+
+    fn load_xip(&self, address: usize, size: usize) -> Result<(), ErrorCode> {
+    // Only valid from Idle — this bypasses the entire write pipeline.
+    if self.state.get() != State::Idle {
+        return Err(ErrorCode::BUSY);
+    }
+
+    debug!("load xip command received - dbs");
+
+    debug!("addr: {:#02x}, size: {:?}", address, size);
+
+    self.state.set(State::Load);
+
+    match self.loader_driver.load_new_process_binary(address, size) {
+        Ok(()) => {
+            self.reset_process_loading_metadata();
+            Ok(())
+        }
+        Err(_) => {
+            self.reset_process_loading_metadata();
+            Err(ErrorCode::FAIL)
+        }
+    }
+}
 }

@@ -77,6 +77,7 @@ use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::{ErrorCode, ProcessId};
+use kernel::debug;
 
 /// Syscall driver number.
 use capsules_core::driver;
@@ -499,6 +500,24 @@ impl<
                 // Request kernel to abort setup/write operation.
                 let result = self.storage_driver.abort();
                 match result {
+                    Ok(()) => {
+                        self.new_app_length.set(0);
+                        CommandReturn::success()
+                    }
+                    Err(e) => {
+                        self.new_app_length.set(0);
+                        self.current_process.take();
+                        CommandReturn::failure(e)
+                    }
+                }
+            }
+
+            6 => {
+                // Load process directly from XIP address (e.g. QSPI at 0x12000000).
+                // arg1 = address, arg2 = size
+                debug!("received xip load command");
+                let res = self.load_driver.load_xip(arg1, arg2);
+                match res {
                     Ok(()) => {
                         self.new_app_length.set(0);
                         CommandReturn::success()

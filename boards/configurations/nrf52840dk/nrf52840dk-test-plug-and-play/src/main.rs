@@ -183,6 +183,293 @@ impl kernel::process::ProcessLoadingAsyncClient for Platform {
     }
 }
 
+// ---------------------------------------------------------------------------
+// QSPI helpers — all register access via raw volatile pointer writes.
+// QSPI peripheral base address on nRF52840.
+// ---------------------------------------------------------------------------
+
+/// Return a raw mutable pointer to a QSPI register at the given byte offset.
+unsafe fn qspi_reg(offset: usize) -> *mut u32 {
+    (0x40029000usize + offset) as *mut u32
+}
+
+/// Initialise the QSPI peripheral in XIP mode.
+/// After this returns, the external flash is visible at 0x12000000.
+///
+/// Pin mapping matches the onboard MX25R6435F on the nRF52840DK:
+///   SCK = P0.17, CSN = P0.19, IO0 = P0.20, IO1 = P0.21,
+///   IO2 = P0.22, IO3 = P0.23
+// unsafe fn qspi_xip_init() {
+//     // ------------------------------------------------------------------
+//     // Configure GPIO pins for high-drive strength.
+//     // P0 PIN_CNF registers: base 0x50000000, PIN_CNF[n] at 0x700 + n*4.
+//     // Value: DIR=output(bit0=1), INPUT=disconnect(bit1=1),
+//     //        PULL=none(bits3:2=00), DRIVE=H0H1(bits10:8=011), SENSE=off.
+//     // ------------------------------------------------------------------
+//     let p0_base = 0x50000000usize;
+//     for pin in [17usize, 19, 20, 21, 22, 23] {
+//         let pin_cnf = (p0_base + 0x700 + pin * 4) as *mut u32;
+//         pin_cnf.write_volatile(
+//             (1 << 0) |  // DIR = output
+//             (1 << 1) |  // INPUT = disconnect
+//             (3 << 8),   // DRIVE = H0H1 (high drive)
+//         );
+//     }
+
+//     // ------------------------------------------------------------------
+//     // Write PSEL registers (pin select).
+//     // Bit 31 must be 0 (connected). Bits 4:0 = pin number.
+//     // Port 0 → bit 5 = 0 (implicit).
+//     // ------------------------------------------------------------------
+//     qspi_reg(0x508).write_volatile(17); // PSEL.SCK
+//     qspi_reg(0x50C).write_volatile(19); // PSEL.CSN
+//     qspi_reg(0x514).write_volatile(20); // PSEL.IO0
+//     qspi_reg(0x518).write_volatile(21); // PSEL.IO1
+//     qspi_reg(0x51C).write_volatile(22); // PSEL.IO2
+//     qspi_reg(0x520).write_volatile(23); // PSEL.IO3
+
+//     // ------------------------------------------------------------------
+//     // IFCONFIG0 (0x524) — protocol configuration.
+//     // READOC  bits 2:0 = 0b011 → READ4IO  (quad I/O read, opcode 0xEB)
+//     // WRITEOC bits 5:3 = 0b011 → PP4IO    (quad I/O page program)
+//     // ADDRMODE bit  6  = 0     → 24-bit addressing
+//     // DPMENABLE bit 7  = 0     → deep power-mode disabled
+//     // ------------------------------------------------------------------
+//     qspi_reg(0x524).write_volatile(
+//         (0x3 << 0) | // READOC  = READ4IO
+//         (0x3 << 3) | // WRITEOC = PP4IO
+//         (0x0 << 6) | // ADDRMODE = 24-bit
+//         (0x0 << 7),  // DPMENABLE = off
+//     );
+
+//     // ------------------------------------------------------------------
+//     // IFCONFIG1 (0x544) — timing configuration.
+//     // SCKDELAY bits 7:0  = 0x80  (cycles CS must stay high between
+//     //                             transfers; 0x80 is safe for MX25R6435F)
+//     // DPMEN    bit  24   = 0     (deep power-mode entry disabled)
+//     // SPIMODE  bit  25   = 0     (MODE0: CPOL=0, CPHA=0)
+//     // SCKFREQ  bits 31:28= 7     → fQSPI = 32 MHz / (7+1) = 4 MHz
+//     //                                (conservative; raise to 2–3 once working)
+//     // ------------------------------------------------------------------
+//     qspi_reg(0x544).write_volatile(
+//         (0x80u32 <<  0) | // SCKDELAY
+//         (0x0  << 24) |    // DPMEN
+//         (0x0  << 25) |    // SPIMODE = MODE0
+//         (0x7  << 28),     // SCKFREQ → 4 MHz
+//     );
+
+//     // ------------------------------------------------------------------
+//     // XIPOFFSET (0x540) — flash byte offset for the XIP window.
+//     // 0 → CPU address 0x12000000 maps to flash offset 0x000000.
+//     // ------------------------------------------------------------------
+//     qspi_reg(0x540).write_volatile(0x00000000); // XIPOFFSET
+
+//     // ------------------------------------------------------------------
+//     // ENABLE (0x500) = 1 — enable the QSPI peripheral.
+//     // ------------------------------------------------------------------
+//     qspi_reg(0x500).write_volatile(1);
+
+//     // ------------------------------------------------------------------
+//     // TASKS_ACTIVATE (0x000) — start the peripheral.
+//     // Clear EVENTS_READY first, then trigger, then poll until set.
+//     // ------------------------------------------------------------------
+//     qspi_reg(0x100).write_volatile(0); // clear EVENTS_READY
+//     qspi_reg(0x000).write_volatile(1); // TASKS_ACTIVATE
+//     while qspi_reg(0x100).read_volatile() == 0 {}
+//     qspi_reg(0x100).write_volatile(0); // clear EVENTS_READY
+
+//     // ------------------------------------------------------------------
+//     // MX25R6435F: enable Quad mode via Write Status Register.
+//     // The chip powers up in single-SPI mode; READ4IO won't work until
+//     // the QE bit (Status Register 2, bit 1) is set.
+//     //
+//     // Sequence:
+//     //   WREN (0x06)          — enable write
+//     //   WRSR (0x01) + 3 bytes — SR1=0x00, SR2=0x02 (QE=1), SR3=0x00
+//     // ------------------------------------------------------------------
+//     qspi_send_custom_instruction(0x06, &[], &mut []); // WREN
+//     qspi_send_custom_instruction(0x01, &[0x00, 0x02, 0x00], &mut []); // WRSR: set QE
+
+//     // Wait for the flash to finish the status register write (WIP polling).
+//     // Poll Read Status Register 1 (0x05) until WIP bit (bit 0) clears.
+//     loop {
+//         // Read 1 byte back: send RDSR, get SR1 in CINSTRDAT0 bits 15:8.
+//         qspi_reg(0x55C).write_volatile(0);
+//         qspi_reg(0x558).write_volatile(
+//             (0x05u32) |  // opcode RDSR
+//             (2u32 << 8)  // LENGTH = 2 (opcode + 1 rx byte)
+//         );
+//         while qspi_reg(0x100).read_volatile() == 0 {}
+//         qspi_reg(0x100).write_volatile(0);
+
+//         let sr1 = (qspi_reg(0x55C).read_volatile() >> 8) & 0xFF;
+//         if sr1 & 0x01 == 0 {
+//             break; // WIP cleared — write complete
+//         }
+//     }
+
+//     let first_word = core::ptr::read_volatile(0x12000000 as *const u32);
+//     kernel::debug!("QSPI XIP init done. [0x12000000] = {:#010x}", first_word);
+// }
+
+// unsafe fn qspi_xip_init() {
+//     let p0_base = 0x50000000usize;
+//     for pin in [17usize, 19, 20, 21, 22, 23] {
+//         let pin_cnf = (p0_base + 0x700 + pin * 4) as *mut u32;
+//         pin_cnf.write_volatile((1 << 0) | (1 << 1) | (3 << 8));
+//     }
+
+//     qspi_reg(0x508).write_volatile(17);
+//     qspi_reg(0x50C).write_volatile(19);
+//     qspi_reg(0x514).write_volatile(20);
+//     qspi_reg(0x518).write_volatile(21);
+//     qspi_reg(0x51C).write_volatile(22);
+//     qspi_reg(0x520).write_volatile(23);
+
+//     qspi_reg(0x524).write_volatile((0x3 << 0) | (0x3 << 3) | (0x0 << 6) | (0x0 << 7));
+//     qspi_reg(0x544).write_volatile((0x80u32 << 0) | (0x0 << 24) | (0x0 << 25) | (0x7 << 28));
+//     qspi_reg(0x540).write_volatile(0x00000000);
+//     qspi_reg(0x500).write_volatile(1);
+
+//     qspi_reg(0x100).write_volatile(0);
+//     qspi_reg(0x000).write_volatile(1); // TASKS_ACTIVATE
+
+//     // Timeout instead of infinite wait
+//     let mut i = 0u32;
+//     while qspi_reg(0x100).read_volatile() == 0 {
+//         i += 1;
+//         if i > 2_000_000 {
+//             // Store a sentinel so we can check after debug writer is up
+//             core::ptr::write_volatile(0x20000000 as *mut u32, 0xDEAD0001);
+//             break;
+//         }
+//     }
+
+//     if i <= 2_000_000 {
+//         qspi_reg(0x100).write_volatile(0);
+//         core::ptr::write_volatile(0x20000000 as *mut u32, 0x900DD00D);
+//     }
+//     // Don't do the custom instructions yet — just get past activate first
+// }
+
+unsafe fn qspi_send_custom_instruction(opcode: u8, tx: &[u8], _rx: &mut [u8]) -> bool {
+    let mut dat0: u32 = 0;
+    for (i, b) in tx.iter().take(4).enumerate() {
+        dat0 |= (*b as u32) << (i * 8);
+    }
+    qspi_reg(0x55C).write_volatile(dat0);
+
+    let length: u32 = 1 + tx.len().min(4) as u32;
+    qspi_reg(0x558).write_volatile((opcode as u32) | (length << 8));
+
+    let mut i = 0u32;
+    while qspi_reg(0x100).read_volatile() == 0 {
+        i += 1;
+        if i > 2_000_000 {
+            kernel::debug!("CINSTR timeout: opcode {:#04x}", opcode);
+            qspi_reg(0x100).write_volatile(0);
+            return false;
+        }
+    }
+    qspi_reg(0x100).write_volatile(0);
+    true
+}
+
+unsafe fn qspi_xip_init() {
+    let p0_base = 0x50000000usize;
+    for pin in [17usize, 19, 20, 21, 22, 23] {
+        let pin_cnf = (p0_base + 0x700 + pin * 4) as *mut u32;
+        pin_cnf.write_volatile((1 << 0) | (1 << 1) | (3 << 8));
+    }
+
+    qspi_reg(0x508).write_volatile(17);
+    qspi_reg(0x50C).write_volatile(19);
+    qspi_reg(0x514).write_volatile(20);
+    qspi_reg(0x518).write_volatile(21);
+    qspi_reg(0x51C).write_volatile(22);
+    qspi_reg(0x520).write_volatile(23);
+
+    qspi_reg(0x524).write_volatile((0x0 << 0) | (0x0 << 3) | (0x0 << 6) | (0x0 << 7));
+    // qspi_reg(0x524).write_volatile((0x3 << 0) | (0x3 << 3) | (0x0 << 6) | (0x0 << 7));
+    qspi_reg(0x544).write_volatile((0x80u32 << 0) | (0x0 << 24) | (0x0 << 25) | (0x7 << 28));
+    qspi_reg(0x540).write_volatile(0x00000000);
+    qspi_reg(0x500).write_volatile(1);
+
+    qspi_reg(0x100).write_volatile(0);
+    qspi_reg(0x000).write_volatile(1); // TASKS_ACTIVATE
+
+    // let mut i = 0u32;
+    // while qspi_reg(0x100).read_volatile() == 0 {
+    //     i += 1;
+    //     if i > 2_000_000 {
+    //         core::ptr::write_volatile(0x20000000 as *mut u32, 0xDEAD0001);
+    //         kernel::debug!("QSPI activate timed out");
+    //         return;
+    //     }
+    // }
+    // qspi_reg(0x100).write_volatile(0);
+    // core::ptr::write_volatile(0x20000000 as *mut u32, 0x900DD00D);
+    // kernel::debug!("QSPI activate OK");
+
+    // // WREN then WRSR to set QE bit
+    // if !qspi_send_custom_instruction(0x06, &[], &mut []) {
+    //     kernel::debug!("WREN failed");
+    //     return;
+    // }
+    // kernel::debug!("WREN OK");
+
+    // if !qspi_send_custom_instruction(0x01, &[0x00, 0x02, 0x00], &mut []) {
+    //     kernel::debug!("WRSR failed");
+    //     return;
+    // }
+    // kernel::debug!("WRSR OK");
+
+    // // Poll RDSR until WIP clears
+    // let mut attempts = 0u32;
+    // loop {
+    //     qspi_reg(0x55C).write_volatile(0);
+    //     qspi_reg(0x558).write_volatile((0x05u32) | (2u32 << 8));
+
+    //     let mut j = 0u32;
+    //     while qspi_reg(0x100).read_volatile() == 0 {
+    //         j += 1;
+    //         if j > 2_000_000 {
+    //             kernel::debug!("RDSR timeout");
+    //             qspi_reg(0x100).write_volatile(0);
+    //             break;
+    //         }
+    //     }
+    //     qspi_reg(0x100).write_volatile(0);
+
+    //     let sr1 = (qspi_reg(0x55C).read_volatile() >> 8) & 0xFF;
+    //     kernel::debug!("SR1 = {:#04x}", sr1);
+    //     if sr1 & 0x01 == 0 {
+    //         kernel::debug!("WIP cleared");
+    //         break;
+    //     }
+
+    //     attempts += 1;
+    //     if attempts > 100 {
+    //         kernel::debug!("WIP never cleared after 100 attempts");
+    //         break;
+    //     }
+    // }
+
+    let mut i = 0u32;
+    while qspi_reg(0x100).read_volatile() == 0 {
+        i += 1;
+        if i > 2_000_000 {
+            kernel::debug!("QSPI activate timed out");
+            return;
+        }
+    }
+    qspi_reg(0x100).write_volatile(0);
+    kernel::debug!("QSPI activate OK");
+
+    let first_word = core::ptr::read_volatile(0x12000000 as *const u32);
+    kernel::debug!("QSPI[0] = {:#010x}", first_word);
+}
+
 /// Main function called after RAM initialized.
 #[no_mangle]
 pub unsafe fn main() {
@@ -415,6 +702,17 @@ pub unsafe fn main() {
     ));
 
     //--------------------------------------------------------------------------
+    // QSPI XIP INIT
+    //--------------------------------------------------------------------------
+
+    kernel::debug!("Before qspi init");
+    qspi_xip_init();
+    let sentinel = core::ptr::read_volatile(0x20000000 as *const u32);
+    kernel::debug!("QSPI activate result: {:#010x}", sentinel);
+    let first_word = core::ptr::read_volatile(0x12000000 as *const u32);
+    kernel::debug!("QSPI First Word = {:#010x}", first_word);
+
+    //--------------------------------------------------------------------------
     // Credential Checking
     //--------------------------------------------------------------------------
 
@@ -442,6 +740,10 @@ pub unsafe fn main() {
             ),
         );
 
+    // Point app_flash at the QSPI XIP window instead of internal flash.
+    // The process loader will walk this slice looking for valid TBF headers.
+
+    // app_memory still comes from internal SRAM via the linker script.
     // These symbols are defined in the standard Tock linker script.
     extern "C" {
         /// Beginning of the ROM region containing app images.

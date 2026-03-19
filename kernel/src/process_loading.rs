@@ -1198,36 +1198,97 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
 
     /// Function to start loading the new application at address `app_address` with size
     /// `app_size`.
+    // pub fn load_new_process_binary(
+    //     &self,
+    //     app_address: usize,
+    //     app_size: usize,
+    // ) -> Result<(), ProcessLoadError> {
+    //     let flash = self.flash_bank.get();
+    //     let process_address = app_address - flash.as_ptr() as usize;
+    //     let process_flash = flash.get(process_address..process_address + app_size);
+    //     let result = self.check_new_binary_validity(process_address);
+    //     match result {
+    //         true => {
+    //             if let Some(flash) = process_flash {
+    //                 self.flash.set(flash);
+    //             } else {
+    //                 return Err(ProcessLoadError::BinaryError(
+    //                     ProcessBinaryError::TbfHeaderNotFound,
+    //                 ));
+    //             }
+
+    //             self.state
+    //                 .set(SequentialProcessLoaderMachineState::DiscoverProcessBinaries);
+
+    //             self.run_mode
+    //                 .set(SequentialProcessLoaderMachineRunMode::RuntimeMode);
+    //             // Start an asynchronous flow so we can issue a callback on error.
+    //             self.deferred_call.set();
+
+    //             Ok(())
+    //         }
+    //         false => Err(ProcessLoadError::BinaryError(
+    //             ProcessBinaryError::TbfHeaderNotFound,
+    //         )),
+    //     }
+    // }
     pub fn load_new_process_binary(
         &self,
         app_address: usize,
         app_size: usize,
     ) -> Result<(), ProcessLoadError> {
+
+        debug!("load new process binary");
         let flash = self.flash_bank.get();
-        let process_address = app_address - flash.as_ptr() as usize;
-        let process_flash = flash.get(process_address..process_address + app_size);
-        let result = self.check_new_binary_validity(process_address);
-        match result {
-            true => {
-                if let Some(flash) = process_flash {
-                    self.flash.set(flash);
-                } else {
-                    return Err(ProcessLoadError::BinaryError(
-                        ProcessBinaryError::TbfHeaderNotFound,
-                    ));
-                }
+        let flash_start = flash.as_ptr() as usize;
+        let flash_end = flash_start + flash.len();
 
-                self.state
-                    .set(SequentialProcessLoaderMachineState::DiscoverProcessBinaries);
+        let process_flash = if app_address >= flash_start && app_address < flash_end {
+            // Address is within flash_bank — compute offset normally.
+            let process_address = app_address - flash_start;
+            let result = self.check_new_binary_validity(process_address);
+            if !result {
+                debug!("check new binary validity fail");
+                return Err(ProcessLoadError::BinaryError(
+                    ProcessBinaryError::TbfHeaderNotFound,
+                ));
+            }
+            flash.get(process_address..process_address + app_size)
+        } else {
+            // Address is outside flash_bank (e.g. QSPI XIP at 0x12000000).
+            // Treat as absolute — validate the TBF header directly.
+            let xip_slice = unsafe {
+                core::slice::from_raw_parts(app_address as *const u8, app_size)
+            };
+            // Check TBF magic directly since check_new_binary_validity uses
+            // flash_bank-relative offsets.
+            let magic = u32::from_le_bytes([
+                xip_slice[0], xip_slice[1], xip_slice[2], xip_slice[3]
+            ]);
 
-                self.run_mode
-                    .set(SequentialProcessLoaderMachineRunMode::RuntimeMode);
-                // Start an asynchronous flow so we can issue a callback on error.
+            debug!("magic value: {:#02x}", magic);
+            if magic != 0x7e544f43 {
+                debug!("magic check fail");
+                return Err(ProcessLoadError::BinaryError(
+                    ProcessBinaryError::TbfHeaderNotFound,
+                ));
+            }
+            debug!("xip_flash slice: {:?}", xip_slice);
+            Some(xip_slice)
+        };
+
+        debug!("trying to match flash slice");
+
+        match process_flash {
+            Some(flash) => {
+                debug!("setting flash to: {:?} and calling load binaries", flash);
+                self.flash.set(flash);
+                self.state.set(SequentialProcessLoaderMachineState::DiscoverProcessBinaries);
+                self.run_mode.set(SequentialProcessLoaderMachineRunMode::RuntimeMode);
                 self.deferred_call.set();
-
                 Ok(())
             }
-            false => Err(ProcessLoadError::BinaryError(
+            None => Err(ProcessLoadError::BinaryError(
                 ProcessBinaryError::TbfHeaderNotFound,
             )),
         }
