@@ -15,7 +15,9 @@
 
 use crate::config;
 use crate::debug;
+use crate::capabilities;
 use crate::kernel::Kernel;
+use crate::process::ShortId;
 
 /// A free contiguous region of memory described by its start address and
 /// available size from that address to the end of the gap.
@@ -77,12 +79,12 @@ impl MemoryManager {
 
         let best = self.find_best_fit(aligned_size, &active)?;
 
-        if config::CONFIG.debug_load_processes {
+        // if config::CONFIG.debug_load_processes {
             debug!(
                 "MemoryManager: allocating {:#x} bytes at {:#010x} (requested {:#x})",
                 aligned_size, best.start, required_size
             );
-        }
+        // }
 
         // `find_best_fit` guarantees:
         //   1. `best.start` is within `self.app_memory`.
@@ -93,6 +95,35 @@ impl MemoryManager {
         Some(unsafe {
             core::slice::from_raw_parts_mut(best.start as *mut u8, aligned_size)
         })
+    }
+
+    pub(crate) fn remove_process_from_active_processes(
+        &self,
+        app: ShortId,
+        capability: &dyn capabilities::ProcessManagementCapability,
+    ) {
+
+        // Capture the memory region to be cleared.
+        let region: Option<(usize, usize)> = self
+            .kernel
+            .get_process_iter()
+            .find(|p| p.short_app_id() == app)
+            .map(|p| {
+                let addr = p.get_addresses();
+                (addr.sram_start, addr.sram_end)
+            });
+
+        self.kernel.remove_process_from_active_processes(app, capability);
+        
+        // Zero the region after the process has been removed from the kernel's
+        // active process list to avoid data leak to new processes.
+        if let Some((start, end)) = region {
+            if end > start {
+                unsafe {
+                    core::ptr::write_bytes(start as *mut u8, 0, end - start);
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
