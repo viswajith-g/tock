@@ -14,6 +14,7 @@ components = { path = "../../../components" }
 cortexm4 = { path = "../../../../arch/cortex-m4" }
 kernel = { path = "../../../../kernel" }
 nrf52840 = { path = "../../../../chips/nrf52840" }
+nrf52840dk = { path = "../../../nordic/nrf52840dk" }
 segger = { path = "../../../../chips/segger" }
 nrf52_components = { path = "../../../nordic/nrf52_components" }
 ecdsa-sw = { path = "../../../../capsules/ecdsa_sw" }
@@ -21,6 +22,8 @@ ecdsa-sw = { path = "../../../../capsules/ecdsa_sw" }
 capsules-core = { path = "../../../../capsules/core" }
 capsules-extra = { path = "../../../../capsules/extra" }
 capsules-system = { path = "../../../../capsules/system" }
+
+tock-tbf = { path = "../../../../libraries/tock-tbf" }
 
 [build-dependencies]
 tock_build_scripts = { path = "../../../build_scripts" }

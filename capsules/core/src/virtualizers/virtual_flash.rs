@@ -38,7 +38,7 @@ use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::ErrorCode;
 
 use kernel::hil::time::Ticks;
-use kernel::{debug, debug_now};
+// use kernel::{debug, debug_now};
 
 /// Handle keeping a list of active users of flash hardware and serialize their
 /// requests.
@@ -51,7 +51,7 @@ pub struct MuxFlash<'a, F: hil::flash::Flash + 'static> {
     users: List<'a, FlashUser<'a, F>>,
     inflight: OptionalCell<&'a FlashUser<'a, F>>,
     // Store timestamp for debug
-    mux_timestamp: Cell<u32>,
+    // mux_timestamp: Cell<u32>,
 
 }
 
@@ -61,11 +61,11 @@ impl<F: hil::flash::Flash> hil::flash::Client<F> for MuxFlash<'_, F> {
         pagebuffer: &'static mut F::Page,
         result: Result<(), hil::flash::Error>,
     ) {
-        let (elapsed, units) = self.elapsed_mux_time(&self.mux_timestamp);
-        debug!(
-            "Elapsed time between mux read and read_complete: {}{}",
-            elapsed, units
-        );
+        // let (elapsed, units) = self.elapsed_mux_time(&self.mux_timestamp);
+        // debug!(
+        //     "Elapsed time between mux read and read_complete: {}{}",
+        //     elapsed, units
+        // );
         self.inflight.take().map(move |user| {
             user.read_complete(pagebuffer, result);
         });
@@ -77,11 +77,11 @@ impl<F: hil::flash::Flash> hil::flash::Client<F> for MuxFlash<'_, F> {
         pagebuffer: &'static mut F::Page,
         result: Result<(), hil::flash::Error>,
     ) {
-        let (elapsed, units) = self.elapsed_mux_time(&self.mux_timestamp);
-        debug!(
-            "Elapsed time between mux write and write_complete: {}{}",
-            elapsed, units
-        );
+        // let (elapsed, units) = self.elapsed_mux_time(&self.mux_timestamp);
+        // debug!(
+        //     "Elapsed time between mux write and write_complete: {}{}",
+        //     elapsed, units
+        // );
         self.inflight.take().map(move |user| {
             user.write_complete(pagebuffer, result);
         });
@@ -89,11 +89,11 @@ impl<F: hil::flash::Flash> hil::flash::Client<F> for MuxFlash<'_, F> {
     }
 
     fn erase_complete(&self, result: Result<(), hil::flash::Error>) {
-        let (elapsed, units) = self.elapsed_mux_time(&self.mux_timestamp);
-        debug!(
-            "Elapsed time between mux erase and erase_complete: {}{}",
-            elapsed, units
-        );
+        // let (elapsed, units) = self.elapsed_mux_time(&self.mux_timestamp);
+        // debug!(
+        //     "Elapsed time between mux erase and erase_complete: {}{}",
+        //     elapsed, units
+        // );
         self.inflight.take().map(move |user| {
             user.erase_complete(result);
         });
@@ -107,40 +107,40 @@ impl<'a, F: hil::flash::Flash> MuxFlash<'a, F> {
             flash,
             users: List::new(),
             inflight: OptionalCell::empty(),
-            mux_timestamp: Cell::new(0),
+            // mux_timestamp: Cell::new(0),
         }
     }
 
     ///Debug Timer
-    fn read_mux_timer(&self) -> u32 {
-        debug_now!()
-    }
+    // fn read_mux_timer(&self) -> u32 {
+    //     debug_now!()
+    // }
 
-    fn elapsed_mux_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
-        let t2 = self.read_mux_timer();
-        let t1 = timestamp.get();
+    // fn elapsed_mux_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
+    //     let t2 = self.read_mux_timer();
+    //     let t1 = timestamp.get();
 
-        timestamp.set(0);
-        let elapsed_ticks = t2.wrapping_sub(t1);
+    //     timestamp.set(0);
+    //     let elapsed_ticks = t2.wrapping_sub(t1);
 
-        // let freq = R::frequency();
-        // debug!("Frequency value: {:?}", freq);
+    //     // let freq = R::frequency();
+    //     // debug!("Frequency value: {:?}", freq);
 
-        // clock is running at 1MHz
-        let mut elapsed = (elapsed_ticks) as f32;
+    //     // clock is running at 1MHz
+    //     let mut elapsed = (elapsed_ticks) as f32;
 
-        let mut units = "us";
-        if elapsed > 1000000.0 {
-            elapsed = elapsed * 0.000001;
-            units = "s";
-        }
-        if elapsed > 1000.0 {
-            elapsed = elapsed * 0.001;
-            units = "ms";
-        }
+    //     let mut units = "us";
+    //     if elapsed > 1000000.0 {
+    //         elapsed = elapsed * 0.000001;
+    //         units = "s";
+    //     }
+    //     if elapsed > 1000.0 {
+    //         elapsed = elapsed * 0.001;
+    //         units = "ms";
+    //     }
 
-        (elapsed, units)
-    }
+    //     (elapsed, units)
+    // }
 
     /// Scan the list of users and find the first user that has a pending
     /// request, then issue that request to the flash hardware.
@@ -161,19 +161,19 @@ impl<'a, F: hil::flash::Flash> MuxFlash<'a, F> {
                     |buf| {
                         match node.operation.get() {
                             Op::Write(page_number) => {
-                                self.mux_timestamp.set(self.read_mux_timer());
+                                // self.mux_timestamp.set(self.read_mux_timer());
                                 if let Err((_, buf)) = self.flash.write_page(page_number, buf) {
                                     node.buffer.replace(buf);
                                 }
                             }
                             Op::Read(page_number) => {
-                                self.mux_timestamp.set(self.read_mux_timer());
+                                // self.mux_timestamp.set(self.read_mux_timer());
                                 if let Err((_, buf)) = self.flash.read_page(page_number, buf) {
                                     node.buffer.replace(buf);
                                 }
                             }
                             Op::Erase(page_number) => {
-                                self.mux_timestamp.set(self.read_mux_timer());
+                                // self.mux_timestamp.set(self.read_mux_timer());
                                 let _ = self.flash.erase_page(page_number);
                             }
                             Op::Idle => {} // Can't get here...
@@ -236,11 +236,11 @@ impl<F: hil::flash::Flash> hil::flash::Client<F> for FlashUser<'_, F> {
         pagebuffer: &'static mut F::Page,
         result: Result<(), hil::flash::Error>,
     ) {
-        let (elapsed, units) = self.mux.elapsed_mux_time(&self.mux.mux_timestamp);
-        debug!(
-            "Elapsed time between mux read and read_complete: {}{}",
-            elapsed, units
-        );
+        // let (elapsed, units) = self.mux.elapsed_mux_time(&self.mux.mux_timestamp);
+        // debug!(
+        //     "Elapsed time between mux read and read_complete: {}{}",
+        //     elapsed, units
+        // );
         self.client.map(move |client| {
             client.read_complete(pagebuffer, result);
         });
@@ -251,22 +251,22 @@ impl<F: hil::flash::Flash> hil::flash::Client<F> for FlashUser<'_, F> {
         pagebuffer: &'static mut F::Page,
         result: Result<(), hil::flash::Error>,
     ) {
-        let (elapsed, units) = self.mux.elapsed_mux_time(&self.mux.mux_timestamp);
-        debug!(
-            "Elapsed time between mux write and write_complete: {}{}",
-            elapsed, units
-        );
+        // let (elapsed, units) = self.mux.elapsed_mux_time(&self.mux.mux_timestamp);
+        // debug!(
+        //     "Elapsed time between mux write and write_complete: {}{}",
+        //     elapsed, units
+        // );
         self.client.map(move |client| {
             client.write_complete(pagebuffer, result);
         });
     }
 
     fn erase_complete(&self, result: Result<(), hil::flash::Error>) {
-        let (elapsed, units) = self.mux.elapsed_mux_time(&self.mux.mux_timestamp);
-        debug!(
-            "Elapsed time between mux erase and erase_complete: {}{}",
-            elapsed, units
-        );
+        // let (elapsed, units) = self.mux.elapsed_mux_time(&self.mux.mux_timestamp);
+        // debug!(
+        //     "Elapsed time between mux erase and erase_complete: {}{}",
+        //     elapsed, units
+        // );
         self.client.map(move |client| {
             client.erase_complete(result);
         });

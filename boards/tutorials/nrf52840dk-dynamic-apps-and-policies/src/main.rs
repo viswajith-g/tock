@@ -476,10 +476,17 @@ pub unsafe fn main() {
         static _eappmem: u8;
     }
 
+    // We cannot trust _sapps and _eapps because _sapps could be from wherever
+    // the kernel ends based on its linker layout, so we hardcode the entire
+    // flash range for the nrf52840dk. The loader will take care of regions 
+    // that should be skipped.
+    const FLASH_START: usize = 0x000000;
+    const FLASH_END:   usize = 0x100000;
+
     let app_flash = core::slice::from_raw_parts(
-        core::ptr::addr_of!(_sapps),
-        core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
-    );
+            FLASH_START as *const u8,
+            FLASH_END - FLASH_START,
+        );
     let app_memory = core::slice::from_raw_parts_mut(
         core::ptr::addr_of_mut!(_sappmem),
         core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,

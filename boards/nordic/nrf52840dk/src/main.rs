@@ -105,14 +105,18 @@ pub unsafe fn main() {
         static _eappmem: u8;
     }
 
+    const FLASH_START: usize = 0x000000;
+    const FLASH_END:   usize = 0x100000;
+
+
     let process_management_capability =
         create_capability!(capabilities::ProcessManagementCapability);
     kernel::process::load_processes(
         board_kernel,
         chip,
-        core::slice::from_raw_parts(
-            core::ptr::addr_of!(_sapps),
-            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
+       core::slice::from_raw_parts(
+            FLASH_START as *const u8,
+            FLASH_END - FLASH_START,
         ),
         core::slice::from_raw_parts_mut(
             core::ptr::addr_of_mut!(_sappmem),

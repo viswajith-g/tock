@@ -21,8 +21,8 @@ pub const BDT_SIZE: usize = 4096;
 
 pub const BDT_MAGIC: [u8; 4] = *b"BDTS";
 
-pub const MAX_KERNEL_ENTRIES: usize = 120;
-pub const MAX_APP_ENTRIES: usize = 128;
+pub const MAX_KERNEL_ENTRIES: usize = 10;
+pub const MAX_APP_ENTRIES: usize = 30;
 
 pub mod binary_type {
     pub const KERNEL: u8 = 0x01;
@@ -31,9 +31,18 @@ pub mod binary_type {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+// pub struct BinaryEntry {
+//     pub start_address: u32,
+//     pub size: u32,
+//     pub version: [u8; 3],
+//     pub binary_type: u8,
+//     pub reserved: [u8; 4],
+// }
 pub struct BinaryEntry {
     pub start_address: u32,
     pub size: u32,
+    pub attributes_start: u32,
+    pub attributes_end: u32,
     pub version: [u8; 3],
     pub binary_type: u8,
     pub reserved: [u8; 4],
@@ -44,6 +53,8 @@ impl BinaryEntry {
         Self {
             start_address: 0,
             size: 0,
+            attributes_start: 0,
+            attributes_end: 0,
             version: [0, 0, 0],
             binary_type: 0,
             reserved: [0; 4],
@@ -72,10 +83,11 @@ impl BinaryEntry {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BdtHeader {
-    pub magic: [u8; 4],   // "BDTS"
+    pub magic: [u8; 4],
     pub kernel_count: u16,
     pub app_count: u16,
-    pub reserved: [u8; 8],
+    pub rescan_flag: u8,  // 0x00 = trust BDT, 0xFF = rescan needed (erased flash default)
+    pub reserved: [u8; 7],
 }
 
 #[repr(C)]
@@ -92,7 +104,8 @@ impl BinariesDiscoveryTable {
                 magic: BDT_MAGIC,
                 kernel_count: 0,
                 app_count: 0,
-                reserved: [0; 8],
+                rescan_flag: 0xFF,
+                reserved: [0; 7],
             },
             kernel_entries: [BinaryEntry::empty(); MAX_KERNEL_ENTRIES],
             app_entries: [BinaryEntry::empty(); MAX_APP_ENTRIES],

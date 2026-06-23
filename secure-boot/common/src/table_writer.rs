@@ -60,7 +60,8 @@ fn build_bdt_in_buffer(
         magic: BDT_MAGIC,
         kernel_count: kernel_count as u16,
         app_count: 0,
-        reserved: [0u8; 8],
+        rescan_flag: 0x00,
+        reserved: [0u8; 7],
     };
     let mut offset = write_header(buffer, &header);
 
@@ -78,7 +79,8 @@ fn write_header(buf: &mut [u8], header: &BdtHeader) -> usize {
     buf[0..4].copy_from_slice(&header.magic);
     buf[4..6].copy_from_slice(&header.kernel_count.to_le_bytes());
     buf[6..8].copy_from_slice(&header.app_count.to_le_bytes());
-    buf[8..16].copy_from_slice(&header.reserved);
+    buf[8] = header.rescan_flag;
+    buf[9..16].copy_from_slice(&header.reserved);
     16
 }
 
@@ -86,10 +88,18 @@ fn write_header(buf: &mut [u8], header: &BdtHeader) -> usize {
 fn write_entry(buf: &mut [u8], entry: &BinaryEntry) -> usize {
     // BinaryEntry is 16 bytes.
     // Layout: start[4] | size[4] | version[3] | type[1] | reserved[4]
+    // buf[0..4].copy_from_slice(&entry.start_address.to_le_bytes());
+    // buf[4..8].copy_from_slice(&entry.size.to_le_bytes());
+    // buf[8..11].copy_from_slice(&entry.version);
+    // buf[11] = entry.binary_type;
+    // buf[12..16].copy_from_slice(&entry.reserved);
+    // 16
     buf[0..4].copy_from_slice(&entry.start_address.to_le_bytes());
     buf[4..8].copy_from_slice(&entry.size.to_le_bytes());
-    buf[8..11].copy_from_slice(&entry.version);
-    buf[11] = entry.binary_type;
-    buf[12..16].copy_from_slice(&entry.reserved);
-    16
+    buf[8..12].copy_from_slice(&entry.attributes_start.to_le_bytes());
+    buf[12..16].copy_from_slice(&entry.attributes_end.to_le_bytes());
+    buf[16..19].copy_from_slice(&entry.version);
+    buf[19] = entry.binary_type;
+    buf[20..24].copy_from_slice(&entry.reserved);
+    24
 }

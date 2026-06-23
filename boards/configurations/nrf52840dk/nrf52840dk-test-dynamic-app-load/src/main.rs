@@ -179,34 +179,34 @@ impl kernel::process::ProcessLoadingAsyncClient for Platform {
     }
 }
 
-#[inline(always)]
-unsafe fn dwt_enable_cyccnt() {
-    const DEMCR: *mut u32      = 0xE000_EDFC as *mut u32; // Debug Exception and Monitor Control
-    const DWT_CTRL: *mut u32   = 0xE000_1000 as *mut u32; // DWT Control
-    const DWT_CYCCNT: *mut u32 = 0xE000_1004 as *mut u32; // Cycle Counter
+// #[inline(always)]
+// unsafe fn dwt_enable_cyccnt() {
+//     const DEMCR: *mut u32      = 0xE000_EDFC as *mut u32; // Debug Exception and Monitor Control
+//     const DWT_CTRL: *mut u32   = 0xE000_1000 as *mut u32; // DWT Control
+//     const DWT_CYCCNT: *mut u32 = 0xE000_1004 as *mut u32; // Cycle Counter
 
-    // Enable trace (TRCENA) so DWT works
-    core::ptr::write_volatile(DEMCR,
-        core::ptr::read_volatile(DEMCR) | (1 << 24));
+//     // Enable trace (TRCENA) so DWT works
+//     core::ptr::write_volatile(DEMCR,
+//         core::ptr::read_volatile(DEMCR) | (1 << 24));
 
-    // Reset and enable the cycle counter
-    core::ptr::write_volatile(DWT_CYCCNT, 0);
-    core::ptr::write_volatile(DWT_CTRL,
-        core::ptr::read_volatile(DWT_CTRL) | 1);
-}
+//     // Reset and enable the cycle counter
+//     core::ptr::write_volatile(DWT_CYCCNT, 0);
+//     core::ptr::write_volatile(DWT_CTRL,
+//         core::ptr::read_volatile(DWT_CTRL) | 1);
+// }
 
-#[inline(always)]
-unsafe fn dwt_get_cycles() -> u32 {
-    const DWT_CYCCNT: *const u32 = 0xE000_1004 as *const u32;
-    core::ptr::read_volatile(DWT_CYCCNT)
-}
+// #[inline(always)]
+// unsafe fn dwt_get_cycles() -> u32 {
+//     const DWT_CYCCNT: *const u32 = 0xE000_1004 as *const u32;
+//     core::ptr::read_volatile(DWT_CYCCNT)
+// }
 
-#[inline(always)]
-fn cycles_to_us(cycles: u64) -> u64 {
-    // nRF52840 runs the core at 64 MHz in Tock
-    const CORE_HZ: u64 = 64_000_000;
-    (cycles * 1_000_000) / CORE_HZ
-}
+// #[inline(always)]
+// fn cycles_to_us(cycles: u64) -> u64 {
+//     // nRF52840 runs the core at 64 MHz in Tock
+//     const CORE_HZ: u64 = 64_000_000;
+//     (cycles * 1_000_000) / CORE_HZ
+// }
 
 /// Main function called after RAM initialized.
 #[no_mangle]
@@ -216,8 +216,8 @@ pub unsafe fn main() {
     //--------------------------------------------------------------------------
 
     // ----- measure start -----
-    dwt_enable_cyccnt();
-    let boot_cycles_start: u32 = dwt_get_cycles();
+    // dwt_enable_cyccnt();
+    // let boot_cycles_start: u32 = dwt_get_cycles();
     // -------------------------
 
     // Apply errata fixes and enable interrupts.
@@ -449,25 +449,42 @@ pub unsafe fn main() {
             ),
         );
 
-    // These symbols are defined in the standard Tock linker script.
+    // // These symbols are defined in the standard Tock linker script.
+    // extern "C" {
+    //     /// Beginning of the RAM region for app memory.
+    //     static mut _sappmem: u8;
+    //     /// End of the RAM region for app memory.
+    //     static _eappmem: u8;
+    // }
+
+    // // We cannot trust _sapps and _eapps because _sapps could be from wherever
+    // // the kernel ends based on its linker layout, so we hardcode the entire
+    // // flash range for the nrf52840dk. The loader will take care of regions 
+    // // that should be skipped.
+    // const FLASH_START: usize = 0x000000;
+    // const FLASH_END:   usize = 0x100000;
+
+    // let app_flash = core::slice::from_raw_parts(
+    //         FLASH_START as *const u8,
+    //         FLASH_END - FLASH_START,
+    //     );
+
+    // let app_memory = core::slice::from_raw_parts_mut(
+    //     core::ptr::addr_of_mut!(_sappmem),
+    //     core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
+    // );
+
     extern "C" {
-        /// Beginning of the RAM region for app memory.
+        static _sapps: u8;
+        static _eapps: u8;
         static mut _sappmem: u8;
-        /// End of the RAM region for app memory.
         static _eappmem: u8;
     }
 
-    // We cannot trust _sapps and _eapps because _sapps could be from wherever
-    // the kernel ends based on its linker layout, so we hardcode the entire
-    // flash range for the nrf52840dk. The loader will take care of regions 
-    // that should be skipped.
-    const FLASH_START: usize = 0x000000;
-    const FLASH_END:   usize = 0x100000;
-
     let app_flash = core::slice::from_raw_parts(
-            FLASH_START as *const u8,
-            FLASH_END - FLASH_START,
-        );
+        core::ptr::addr_of!(_sapps),
+        core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
+    );
 
     let app_memory = core::slice::from_raw_parts_mut(
         core::ptr::addr_of_mut!(_sappmem),
@@ -547,13 +564,13 @@ pub unsafe fn main() {
     let _ = pconsole.start();
 
     // ----- compute & print boot time just before entering kernel loop -----
-    let boot_cycles_end: u32 = dwt_get_cycles();
-    let delta = boot_cycles_end.wrapping_sub(boot_cycles_start) as u64;
-    let boot_us = cycles_to_us(delta);
-    kernel::debug!(
-        "Boot path time (main() -> kernel_loop): {} us ({} cycles @64MHz)",
-        boot_us, delta
-    );
+    // let boot_cycles_end: u32 = dwt_get_cycles();
+    // let delta = boot_cycles_end.wrapping_sub(boot_cycles_start) as u64;
+    // let boot_us = cycles_to_us(delta);
+    // kernel::debug!(
+    //     "Boot path time (main() -> kernel_loop): {} us ({} cycles @64MHz)",
+    //     boot_us, delta
+    // );
     // ---------------------------------------------------------------------
 
     board_kernel.kernel_loop(

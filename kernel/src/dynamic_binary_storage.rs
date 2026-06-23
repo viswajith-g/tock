@@ -10,8 +10,8 @@
 use core::cell::Cell;
 
 use crate::config;
-use crate::hil::time::Ticks;
-use crate::{debug, debug_now};
+// use crate::hil::time::Ticks;
+use crate::{debug};//, debug_now};
 use crate::deferred_call::{DeferredCall, DeferredCallClient};
 use crate::hil::nonvolatile_storage::{NonvolatileStorage, NonvolatileStorageClient};
 use crate::platform::chip::Chip;
@@ -25,7 +25,7 @@ use crate::utilities::leasable_buffer::SubSliceMut;
 use crate::ErrorCode;
 
 /// Expected buffer length for storing binaries.
-pub const BUF_LEN: usize = 512;
+pub const BUF_LEN: usize = 4096;
 
 /// The number of bytes in the TBF header for a padding app.
 const PADDING_TBF_HEADER_LENGTH: usize = 16;
@@ -68,7 +68,7 @@ impl Default for BinaryType {
 }
 
 // Kernel attribute TLV types
-const KERNEL_TLV_APP_MEMORY: u16 = 0x0101;
+// const KERNEL_TLV_APP_MEMORY: u16 = 0x0101;
 const KERNEL_TLV_KERNEL_FLASH: u16 = 0x0102;
 const KERNEL_TLV_KERNEL_VERSION: u16 = 0x0103;
 
@@ -168,7 +168,7 @@ pub struct SequentialDynamicBinaryStorage<
     process_metadata: OptionalCell<ProcessLoadMetadata>,
     state: Cell<State>,
     deferred_call: DeferredCall,
-    timestamp: Cell::<u32>,
+    // timestamp: Cell::<u32>,
 }
 
 impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileStorage<'b>>
@@ -188,39 +188,39 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
             process_metadata: OptionalCell::empty(),
             state: Cell::new(State::Idle),
             deferred_call: DeferredCall::new(),
-            timestamp: Cell::new(0),
+            // timestamp: Cell::new(0),
         }
     }
 
     /// Functions to profile dbs
-    fn read_timer(&self) -> u32 {
-        debug_now!()
-    }
+    // fn read_timer(&self) -> u32 {
+    //     debug_now!()
+    // }
 
-    fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
-        let t2 = self.read_timer();
-        let t1 = timestamp.get();
+    // fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
+    //     let t2 = self.read_timer();
+    //     let t1 = timestamp.get();
 
-        timestamp.set(0);
-        let elapsed_ticks = t2.wrapping_sub(t1);
+    //     timestamp.set(0);
+    //     let elapsed_ticks = t2.wrapping_sub(t1);
 
-        // let freq = R::frequency();
-        // debug!("Frequency value: {:?}", freq);
-        // Clock set to 1Mhz
-        let mut elapsed = (elapsed_ticks) as f32;
+    //     // let freq = R::frequency();
+    //     // debug!("Frequency value: {:?}", freq);
+    //     // Clock set to 1Mhz
+    //     let mut elapsed = (elapsed_ticks) as f32;
 
-        let mut units = "us";
-        if elapsed > 1000000.0 {
-            elapsed = elapsed * 0.000001;
-            units = "s";
-        }
-        if elapsed > 1000.0 {
-            elapsed = elapsed * 0.001;
-            units = "ms";
-        }
+    //     let mut units = "us";
+    //     if elapsed > 1000000.0 {
+    //         elapsed = elapsed * 0.000001;
+    //         units = "s";
+    //     }
+    //     if elapsed > 1000.0 {
+    //         elapsed = elapsed * 0.001;
+    //         units = "ms";
+    //     }
 
-        (elapsed, units)
-    }
+    //     (elapsed, units)
+    // }
 
     /// Function to reset variables and states.
     fn reset_process_loading_metadata(&self) {
@@ -316,12 +316,12 @@ impl<'a, 'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: Nonvolatil
     
     /// Trigger system reboot
     fn reboot_system(&self) {
-        let (elapsed, units) = self.elapsed_time(&self.timestamp);
-                debug!(
-                    "Elapsed time between kernel load and load_done: {}{}",
-                    elapsed, units
-                );
-        debug!("Kernel finalized, need to reboot");
+        // let (elapsed, units) = self.elapsed_time(&self.timestamp);
+        //         debug!(
+        //             "Elapsed time between kernel load and load_done: {}{}",
+        //             elapsed, units
+        //         );
+        // debug!("Kernel finalized, need to reboot");
         // TODO: Implement reboot mechanism
         self.load_client.map(|client| {
             client.load_done(Ok(()));
@@ -532,7 +532,7 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                         }
                         Err(e) => {
                             // Kernel validation failed
-                            debug!("Kernel validation failed, writing padding");
+                            // debug!("Kernel validation failed, writing padding");
                             self.state.set(State::Fail);
                             self.buffer.replace(buffer);
                             
@@ -680,11 +680,11 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                         metadata.binary_type = binary_type;
                         self.process_metadata.set(metadata);
                     }
-                    debug!("New binary start addr: {:#0x}", new_binary_start_address);
-                    debug!("Previous binary end addr: {:#0x}", previous_app_end_addr);
-                    debug!("Next binary start addr: {:#0x}", next_app_start_addr);
-                    debug!("New binary type: {:?}", binary_type);
-                    debug!("Padding requirement: {:?}", padding_requirement);
+                    // debug!("New binary start addr: {:#0x}", new_binary_start_address);
+                    // debug!("Previous binary end addr: {:#0x}", previous_app_end_addr);
+                    // debug!("Next binary start addr: {:#0x}", next_app_start_addr);
+                    // debug!("New binary type: {:?}", binary_type);
+                    // debug!("Padding requirement: {:?}", padding_requirement);
                     // self.state.set(State::AppWrite);
                     // // Let the client know we are done setting up.
                     // self.storage_client.map(|client| {
@@ -775,7 +775,7 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
         match self.state.get() {
             // self.timestamp.set(self.read_timer());
             State::AppWrite => {
-                debug!("enter finalize");
+                // debug!("enter finalize");
                 if let Some(metadata) = self.process_metadata.get() {
                     // Check if this is a kernel binary
                     if metadata.binary_type == BinaryType::Kernel {
@@ -815,7 +815,9 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                                 Err(_e) => {
                                     // This means we were unable to write the padding
                                     // app.
-                                    debug!("unable to write padding app");
+                                    if config::CONFIG.debug_load_processes {
+                                        debug!("unable to write padding app");
+                                    }
                                     self.reset_process_loading_metadata();
                                     Err(ErrorCode::FAIL)
                                 }
@@ -901,7 +903,7 @@ impl<'b, C: Chip + 'static, D: ProcessStandardDebug + 'static, F: NonvolatileSto
                         }
                     }; 
                     }else {
-                        self.timestamp.set(self.read_timer());
+                        // self.timestamp.set(self.read_timer());
                         // Trigger reboot
                         // self.timestamp.set(self.read_timer());
                         self.reboot_system();

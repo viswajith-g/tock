@@ -207,15 +207,15 @@ SECTIONS
      * Align on PAGE_SIZE number of bytes. Volumes within this region are
      * allocated with the storage_volume! macro in utils.rs.
      */
-    .storage :
-    {
-        . = ALIGN(PAGE_SIZE);
-        _sstorage = .;
-        *(.storage* storage*)
-        _estorage = .;
-        . = ALIGN(PAGE_SIZE);
-    } > rom
-    . = ALIGN(PAGE_SIZE);
+    /*  .storage :
+    * {
+    *    . = ALIGN(PAGE_SIZE);
+    *    _sstorage = .;
+    *    *(.storage* storage*)
+    *    _estorage = .;
+    *    . = ALIGN(PAGE_SIZE);
+    * } > rom
+    * . = ALIGN(PAGE_SIZE);
 
     /* Mark the end of static elements */
     . = ALIGN(4);
@@ -363,6 +363,11 @@ SECTIONS
         /* SHORT(0x0104)   /* tlv_type: Kernel Relocations */
         /* SHORT(_tock_attr_reloc_value_end - _tock_attr_reloc_start) */
         /* _tock_attr_reloc_end = .; */
+
+        /* LONG(_sstorage)
+        /* LONG(_estorage - _sstorage)
+        /* SHORT(0x0105)
+        /* SHORT(8)
 
         /* TLV: Kernel Signature
          * This field specifies the signature of the kernel image. 

@@ -19,11 +19,11 @@ pub mod signature_verifier;
 pub mod binary_discovery_table;
 pub mod table_writer;
 pub mod flash_hal;
-pub mod kernel_relocator;
+// pub mod kernel_relocator;
 
 use crate::error::BootError;
 use crate::types::{KernelVersion, KernelRegion};
-use crate::binary_discovery_table::BinaryEntry;
+use crate::binary_discovery_table::{BinariesDiscoveryTable, BinaryEntry};
 
 /// Trait that boards must implement for bootloader I/O operations
 pub trait BootloaderIO {
@@ -85,75 +85,207 @@ struct KernelCandidate {
     version: KernelVersion,
 }
 
+// fn build_candidates_from_bdt<C: BoardConfig, IO: BootloaderIO>(
+//         io: &IO,
+//     ) -> Result<[Option<locate_tlvs::PotentialKernel>; 8], BootError> {
+//         let bdt = binary_discovery_table::BinariesDiscoveryTable::read()?;
+//         let mut kernels: [Option<locate_tlvs::PotentialKernel>; 8] = [None; 8];
+//         let mut count = 0;
+
+//         for entry in bdt.iter_kernel_entries() {
+//             if count >= 8 { break; }
+            
+//             // Reconstruct PotentialKernel from BDT entry.
+//             // We still need attributes_start/end — derive them by scanning
+//             // backward from the known start+size, which is cheap since we
+//             // know exactly where to look.
+//             let kernel_start = entry.start_address as usize;
+//             let attributes_end = kernel_start + entry.size as usize;
+
+//             // attributes_end points to end of attributes section (past TOCK sentinel).
+//             // Walk backward from there to find attributes_start.
+//             let attributes_start = locate_tlvs::find_attributes_start(attributes_end, io)
+//                 .map_err(|_| BootError::InvalidBDT)?;
+
+//             kernels[count] = Some(locate_tlvs::PotentialKernel {
+//                 start_address: kernel_start,
+//                 size: entry.size as usize,
+//                 attributes_start,
+//                 attributes_end,
+//             });
+//             count += 1;
+//         }
+
+//         Ok(kernels)
+//     }
+fn build_candidates_from_bdt<C: BoardConfig, IO: BootloaderIO>(
+    io: &IO,
+) -> Result<[Option<locate_tlvs::PotentialKernel>; 8], BootError> {
+    let bdt = binary_discovery_table::BinariesDiscoveryTable::read()?;
+    let mut kernels: [Option<locate_tlvs::PotentialKernel>; 8] = [None; 8];
+    let mut count = 0;
+
+    for entry in bdt.iter_kernel_entries() {
+        if count >= 8 { break; }
+
+        let attrs = attributes_parser::parse_attributes(
+            entry.attributes_start as usize,
+            entry.attributes_end as usize,
+            io,
+        ).map_err(|_| BootError::InvalidBDT)?;
+
+        let version = attrs.kernel_version.ok_or(BootError::InvalidBDT)?;
+        let signature = attrs.signature.ok_or(BootError::InvalidBDT)?;
+
+        kernels[count] = Some(locate_tlvs::PotentialKernel {
+            start_address: entry.start_address as usize,
+            size: entry.size as usize,
+            attributes_start: entry.attributes_start as usize,
+            attributes_end: entry.attributes_end as usize,
+            version,
+            signature,
+        });
+        count += 1;
+    }
+
+    Ok(kernels)
+}
+
 pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     io: &IO,
 ) -> Result<(usize, usize), BootError> {
     // let mut buf = [0u8; 32];
 
     // io.debug("checking for potential candidates");
+    // let scan_kernel_start = io.now_us();
     // Scan flash for all kernels
 
-    // let scan_kernel_start = io.now_us();
-    let potential_kernels = locate_tlvs::scan_for_potential_kernels(
-        C::AVAILABLE_FLASH_START,
-        C::AVAILABLE_FLASH_END,
-        io,
-    )?;
+     let needs_scan = match BinariesDiscoveryTable::read() {
+        Err(_) => true, // BDT missing or corrupt
+        Ok(bdt) => bdt.header.rescan_flag != 0x00,
+    };
+
+    let potential_kernels: [Option<locate_tlvs::PotentialKernel>; 8] = if needs_scan {
+        flash_hal::FlashHal::enable_icache();
+        let result = locate_tlvs::scan_for_potential_kernels(
+            C::AVAILABLE_FLASH_START,
+            C::AVAILABLE_FLASH_END,
+            io,
+        );
+        flash_hal::FlashHal::disable_icache();
+        result?
+    } else {
+        build_candidates_from_bdt::<C, IO>(io)?
+    };
+
     // io.print_elapsed("Time elapsed in scanning for kernels: ", scan_kernel_start);
-    io.debug("Scanned for potential kernels");
+    // io.debug("Scanned for potential kernels");
     
+    //------------------------------------------------------------------------------------------
+    // // Extract versions from each kernel
+    // // let kernels_version_extract = io.now_us();
+    // let mut candidates: [Option<KernelCandidate>; 8] = [None; 8];
+    // let mut candidate_count = 0;
     
-    // Extract versions from each kernel
+    // for maybe_kernel in &potential_kernels {
+    //     if let Some(kernel) = maybe_kernel {
+    //         // Parse attributes to get version
+    //         if let Ok(version) = extract_version::<C, IO>(&kernel, io) {
+    //             candidates[candidate_count] = Some(KernelCandidate {
+    //                 kernel: *kernel,
+    //                 version,
+    //             });
+    //             candidate_count += 1;
+    //             // io.debug("candidate count:");
+    //             // io.format(candidate_count, &mut buf);
+    //         }
+    //     }
+    // }
+    // // io.print_elapsed("Time elapsed in extracting versions from kernels: : ", kernels_version_extract);    
+    
+    // if candidate_count == 0 {
+    //     // io.debug("No candidates found");
+    //     return Err(BootError::NoValidKernel);
+    // }
+
+    // // io.debug("sorting candidates by version");
+    
+    // // Sort candidates by version
+    // // let sorting_time = io.now_us();
+    // sort_candidates_by_version(&mut candidates, candidate_count);
+
+    // // io.print_elapsed("Time elapsed in sorting kernels: ", sorting_time);
+    
+    // // Try to verify and boot kernels in order
+    
+    // // let candidate_selection_time = io.now_us();
+    // let mut selected_kernel = None;
+
+    // for i in 0..candidate_count {
+    //     if let Some(candidate) = &candidates[i] {
+    //         // Try to the kernel's signature
+    //         // io.debug("verifying single kernel");
+    //         if verify_single_kernel::<C, IO>(io, &candidate.kernel).is_ok() {
+    //             // Verification succeeded. Use this kernel
+    //             // io.debug("verification successful");
+    //             selected_kernel = Some(candidate.kernel);
+    //             break;
+    //         }
+    //         // Verification failed, try next candidate
+    //     }
+    // }
+
+    // let selected_kernel = selected_kernel.ok_or(BootError::NoValidKernel)?;
+    //---------------------------------------------------------------------------------------------------
+
     // let kernels_version_extract = io.now_us();
     let mut candidates: [Option<KernelCandidate>; 8] = [None; 8];
     let mut candidate_count = 0;
     
     for maybe_kernel in &potential_kernels {
         if let Some(kernel) = maybe_kernel {
-            // Parse attributes to get version
-            if let Ok(version) = extract_version::<C, IO>(&kernel, io) {
-                candidates[candidate_count] = Some(KernelCandidate {
-                    kernel: *kernel,
-                    version,
-                });
-                candidate_count += 1;
-                // io.debug("candidate count:");
-                // io.format(candidate_count, &mut buf);
+            if let Ok(attrs) = attributes_parser::parse_attributes(
+                kernel.attributes_start,
+                kernel.attributes_end,
+                io,
+            ) {
+                match (attrs.kernel_version, attrs.signature) {
+                    (Some(v), Some(sig)) if v >= C::MIN_KERNEL_VERSION => {
+                        candidates[candidate_count] = Some(KernelCandidate {
+                            kernel: locate_tlvs::PotentialKernel {
+                                version: v,
+                                signature: sig,
+                                ..*kernel
+                            },
+                            version: v,
+                        });
+                        candidate_count += 1;
+                    }
+                    _ => {}
+                }
             }
         }
     }
-    // io.print_elapsed("Time elapsed in extracting versions from kernels: : ", kernels_version_extract);
-
+    // io.print_elapsed("Time elapsed in extracting versions from kernels: : ", kernels_version_extract); 
     
     if candidate_count == 0 {
-        // io.debug("No candidates found");
         return Err(BootError::NoValidKernel);
     }
 
     // io.debug("sorting candidates by version");
-    
-    // Sort candidates by version
     // let sorting_time = io.now_us();
     sort_candidates_by_version(&mut candidates, candidate_count);
-
     // io.print_elapsed("Time elapsed in sorting kernels: ", sorting_time);
-    
-    // Try to verify and boot kernels in order
     
     // let candidate_selection_time = io.now_us();
     let mut selected_kernel = None;
 
     for i in 0..candidate_count {
         if let Some(candidate) = &candidates[i] {
-            // Try to the kernel's signature
-            // io.debug("verifying single kernel");
             if verify_single_kernel::<C, IO>(io, &candidate.kernel).is_ok() {
-                // Verification succeeded. Use this kernel
-                // io.debug("verification successful");
                 selected_kernel = Some(candidate.kernel);
                 break;
             }
-            // Verification failed, try next candidate
         }
     }
 
@@ -193,12 +325,32 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     
     // let bdt_time = io.now_us();
     // Build discovery table with found kernels
+    // let mut kernel_entries = [BinaryEntry::empty(); 8];
+    // for i in 0..candidate_count {
+    //     if let Some(candidate) = &candidates[i] {
+    //         kernel_entries[i] = BinaryEntry {
+    //             start_address: candidate.kernel.start_address as u32,
+    //             size: (candidate.kernel.attributes_end - candidate.kernel.start_address) as u32,
+    //             version: [
+    //                 candidate.version.major as u8,
+    //                 candidate.version.minor as u8,
+    //                 candidate.version.patch as u8,
+    //             ],
+    //             binary_type: binary_discovery_table::binary_type::KERNEL,
+    //             reserved: [0; 4],
+    //         };
+    //     }
+    // }
+    // Build and write BDT
+    // let bdt_time = io.now_us();
     let mut kernel_entries = [BinaryEntry::empty(); 8];
     for i in 0..candidate_count {
         if let Some(candidate) = &candidates[i] {
             kernel_entries[i] = BinaryEntry {
                 start_address: candidate.kernel.start_address as u32,
-                size: (candidate.kernel.attributes_end - candidate.kernel.start_address) as u32,
+                size: candidate.kernel.size as u32,
+                attributes_start: candidate.kernel.attributes_start as u32,
+                attributes_end: candidate.kernel.attributes_end as u32,
                 version: [
                     candidate.version.major as u8,
                     candidate.version.minor as u8,
@@ -215,7 +367,7 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     table_writer::write_bdt_to_flash(&kernel_entries, candidate_count)?;
     // io.print_elapsed("Time elapsed in writing bdt to flash: ", bdt_write_time);
     
-    io.debug("Kernel Picked");
+    // io.debug("Kernel Picked");
     // Return to main
 
     // io.debug("selected kernel start address: ");
@@ -224,97 +376,122 @@ pub fn verify_and_boot<C: BoardConfig, IO: BootloaderIO>(
     Ok((selected_kernel.start_address, selected_kernel.attributes_end))
 }
 
-// Extract version from 
-fn extract_version<C: BoardConfig, IO: BootloaderIO>(
-    kernel: &locate_tlvs::PotentialKernel,
-    io: &IO,
-) -> Result<KernelVersion, BootError> {
-    // let mut buf = [0u8; 32];
+// // Extract version from 
+// fn extract_version<C: BoardConfig, IO: BootloaderIO>(
+//     kernel: &locate_tlvs::PotentialKernel,
+//     io: &IO,
+// ) -> Result<KernelVersion, BootError> {
+//     // let mut buf = [0u8; 32];
 
-    // Parse attributes
-    let attributes = attributes_parser::parse_attributes(
-        kernel.attributes_start,
-        kernel.attributes_end,
-        io,
-    )?;
+//     // Parse attributes
+//     let attributes = attributes_parser::parse_attributes(
+//         kernel.attributes_start,
+//         kernel.attributes_end,
+//         io,
+//     )?;
 
-    // Get version
-    let version = attributes.kernel_version.ok_or(BootError::InvalidTLV)?;
+//     // Get version
+//     let version = attributes.kernel_version.ok_or(BootError::InvalidTLV)?;
     
-    // Check minimum version
-    if version < C::MIN_KERNEL_VERSION {
-        return Err(BootError::VersionTooOld);
-    }
+//     // Check minimum version
+//     if version < C::MIN_KERNEL_VERSION {
+//         return Err(BootError::VersionTooOld);
+//     }
 
-    Ok(version)
-}
+//     Ok(version)
+// }
+
+// pub fn verify_single_kernel<C: BoardConfig, IO: BootloaderIO>(
+//     io: &IO,
+//     kernel: &locate_tlvs::PotentialKernel,
+// ) -> Result<(), BootError> {
+//     // Verify and Boot entered
+//     // let mut buf = [0u8; 32];
+
+//     // let attributes_time = io.now_us();
+//     // Parsing attributes
+//     let attributes = attributes_parser::parse_attributes(
+//         kernel.attributes_start,
+//         kernel.attributes_end,
+//         io,
+//     )?;
+
+//     // io.print_elapsed("Time elapsed in parsing Kernel attributes: ", attributes_time);
+
+//     // Finding signature
+//     // io.debug_blink(15, 4);
+//     // io.debug("checking for signature");
+//     let signature = attributes.signature.ok_or(BootError::SignatureMissing)?;
+//     // io.debug("signature tlv present");
+
+//     // Check flash TLV validity
+//     let _ = attributes.kernel_flash.ok_or(BootError::InvalidTLV)?;
+    
+
+//     // let (flash_start, _flash_len) = attributes.kernel_flash.ok_or(BootError::InvalidTLV)?;
+
+//     // io.debug("flash start:");
+//     // io.format(flash_start as usize, &mut buf);
+
+//     let region = KernelRegion {
+//         start: kernel.start_address,
+//         end:   kernel.attributes_end,
+//         entry_point: kernel.start_address,
+//         attributes_start: kernel.attributes_start
+//     };
+
+//     // io.debug("Kernel Region:");
+//     // io.debug("region.start:");
+//     // io.format(region.start, &mut buf);
+//     // io.debug("region.end:");
+//     // io.format(region.end, &mut buf);
+//     // let (sig_start, sig_end) = signature.location;
+//     // io.debug("sig flash_addr:");
+//     // io.format(sig_start, &mut buf);
+
+//     // Compute hash
+//     // let hash_time = io.now_us();
+//     let hash = compute_hash::compute_kernel_hash(
+//         &region,
+//         &signature,
+//         kernel.attributes_end,
+//     )?;
+
+//     // io.print_elapsed("Time elapsed in computing hash: ", hash_time);
+
+//     // io.debug("Hash computed");
+
+//     // Verify signature
+//     // let signature_time = io.now_us();
+//     signature_verifier::verify_signature::<C, IO>(&hash, &signature, io)?;
+//     // io.print_elapsed("Time elapsed in verifying signature: ", signature_time);
+//     // io.debug("Signature verified");
+//     // Verification success
+//     Ok(())
+// }
 
 pub fn verify_single_kernel<C: BoardConfig, IO: BootloaderIO>(
     io: &IO,
     kernel: &locate_tlvs::PotentialKernel,
 ) -> Result<(), BootError> {
-    // Verify and Boot entered
     // let mut buf = [0u8; 32];
-
-    // let attributes_time = io.now_us();
-    // Parsing attributes
-    let attributes = attributes_parser::parse_attributes(
-        kernel.attributes_start,
-        kernel.attributes_end,
-        io,
-    )?;
-
-    // io.print_elapsed("Time elapsed in parsing Kernel attributes: ", attributes_time);
-
-    // Finding signature
-    // io.debug_blink(15, 4);
-    // io.debug("checking for signature");
-    let signature = attributes.signature.ok_or(BootError::SignatureMissing)?;
-    io.debug("signature tlv present");
-
-    // Check flash TLV validity
-    let _ = attributes.kernel_flash.ok_or(BootError::InvalidTLV)?;
-    
-
-    // let (flash_start, _flash_len) = attributes.kernel_flash.ok_or(BootError::InvalidTLV)?;
-
-    // io.debug("flash start:");
-    // io.format(flash_start as usize, &mut buf);
-
     let region = KernelRegion {
         start: kernel.start_address,
-        end:   kernel.attributes_end,
+        end: kernel.attributes_end,
         entry_point: kernel.start_address,
         attributes_start: kernel.attributes_start,
     };
 
-    // io.debug("Kernel Region:");
-    // io.debug("region.start:");
-    // io.format(region.start, &mut buf);
-    // io.debug("region.end:");
-    // io.format(region.end, &mut buf);
-    // let (sig_start, sig_end) = signature.location;
-    // io.debug("sig flash_addr:");
-    // io.format(sig_start, &mut buf);
-
-    // Compute hash
     // let hash_time = io.now_us();
     let hash = compute_hash::compute_kernel_hash(
         &region,
-        &signature,
+        &kernel.signature,
         kernel.attributes_end,
     )?;
-
     // io.print_elapsed("Time elapsed in computing hash: ", hash_time);
-
-    io.debug("Hash computed");
-
-    // Verify signature
     // let signature_time = io.now_us();
-    signature_verifier::verify_signature::<C, IO>(&hash, &signature, io)?;
+    signature_verifier::verify_signature::<C, IO>(&hash, &kernel.signature, io)?;
     // io.print_elapsed("Time elapsed in verifying signature: ", signature_time);
-    io.debug("Signature computed");
-    // Verification success
     Ok(())
 }
 

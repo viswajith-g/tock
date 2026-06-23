@@ -18,6 +18,7 @@ use std::{fs, path::PathBuf};
 
 const TLV_TYPE_SIGNATURE: u16 = 0x0104;
 const TLV_TYPE_KERNEL_FLASH: u16 = 0x0102;
+const TLV_TYPE_STORAGE: u16 = 0x0105;
 
 const SIG_RS_LEN: usize = 64;
 const SIG_ALGO_LEN: usize = 4;
@@ -72,6 +73,15 @@ fn main() -> Result<()> {
         parse_kernel_flash_len(attr_slice)
             .context("Kernel Flash TLV (0x0102) not found")?;
 
+    let storage_skip = find_tlv_value(attr_slice, TLV_TYPE_STORAGE)
+    .ok()
+    .and_then(|(val_off, _)| {
+        let v = &attr_slice[val_off..val_off + 8];
+        let start = u32::from_le_bytes([v[0],v[1],v[2],v[3]]) as usize;
+        let len   = u32::from_le_bytes([v[4],v[5],v[6],v[7]]) as usize;
+        Some((start, start + len))
+    });
+
     // Physical addresses
     let sig_value_paddr = attr_paddr + sig_val_off_in_attr;
 
@@ -101,6 +111,7 @@ fn main() -> Result<()> {
         attributes_end_paddr,
         sig_value_paddr,
         SIG_RS_LEN,
+        storage_skip,
     )?;
 
     // Sign and write back
@@ -196,6 +207,7 @@ fn hash_flash_window(
     win_end: usize,
     sig_paddr: usize,
     sig_len: usize,
+    storage_skip: Option<(usize, usize)>,
 ) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     let mut cur = win_start;
@@ -229,9 +241,18 @@ fn hash_flash_window(
 
             // Hash
             if file_range_start < file_range_end {
-                let data = &elf_bytes[file_range_start..file_range_end];
-                hash_data_with_sig_zero(&mut hasher, data, h_start, sig_paddr, sig_paddr + sig_len);
+                // let data = &elf_bytes[file_range_start..file_range_end];
+                // hash_data_with_sig_zero(&mut hasher, data, h_start, sig_paddr, sig_paddr + sig_len);
 
+                let data = &elf_bytes[file_range_start..file_range_end];
+                hash_data_with_skips(
+                    &mut hasher,
+                    data,
+                    h_start,
+                    sig_paddr,
+                    sig_paddr + sig_len,
+                    storage_skip,
+                );
                 let hashed_len = file_range_end - file_range_start;
                 if hashed_len < h_len {
                     hash_fill(&mut hasher, h_len - hashed_len, 0x00);
@@ -269,41 +290,102 @@ fn hash_fill(hasher: &mut Sha256, size: usize, byte: u8) {
 
 /// Hash data whose flash address starts at region_start. If it overlaps
 /// [sig_start..sig_end), hash zeros for that overlap
-fn hash_data_with_sig_zero(
+// fn hash_data_with_sig_zero(
+//     hasher: &mut Sha256,
+//     data: &[u8],
+//     region_start: usize,
+//     sig_start: usize,
+//     sig_end: usize,
+// ) {
+//     let region_end = region_start + data.len();
+
+//     // No overlap
+//     if sig_end <= region_start || sig_start >= region_end {
+//         hasher.update(data);
+//         return;
+//     }
+
+//     let ovl_start = sig_start.max(region_start) - region_start;
+//     let ovl_end = sig_end.min(region_end) - region_start;
+
+//     if ovl_start > 0 {
+//         hasher.update(&data[..ovl_start]);
+//     }
+
+//     // zeros for overlap
+//     let zeros_len = ovl_end.saturating_sub(ovl_start);
+//     if zeros_len > 0 {
+//         let zeros = [0u8; SIG_VALUE_LEN];
+//         let mut rem = zeros_len;
+//         while rem > 0 {
+//             let chunk = rem.min(zeros.len());
+//             hasher.update(&zeros[..chunk]);
+//             rem -= chunk;
+//         }
+//     }
+
+//     if ovl_end < data.len() {
+//         hasher.update(&data[ovl_end..]);
+//     }
+// }
+fn hash_data_with_skips(
     hasher: &mut Sha256,
     data: &[u8],
     region_start: usize,
     sig_start: usize,
     sig_end: usize,
+    storage_skip: Option<(usize, usize)>,
 ) {
     let region_end = region_start + data.len();
 
-    // No overlap
-    if sig_end <= region_start || sig_start >= region_end {
-        hasher.update(data);
-        return;
+    // Build sorted skip list: (start, end, zero_fill)
+    let mut skips: [(usize, usize, bool); 2] = [
+        (sig_start, sig_end, true),
+        (usize::MAX, usize::MAX, false),
+    ];
+    if let Some((ss, se)) = storage_skip {
+        skips[1] = (ss, se, false);
+    }
+    if skips[0].0 > skips[1].0 {
+        skips.swap(0, 1);
     }
 
-    let ovl_start = sig_start.max(region_start) - region_start;
-    let ovl_end = sig_end.min(region_end) - region_start;
+    let mut cursor = region_start;
 
-    if ovl_start > 0 {
-        hasher.update(&data[..ovl_start]);
-    }
+    for (skip_start, skip_end, zero_fill) in skips {
+        if skip_start == usize::MAX { break; }
+        // clamp to this data region
+        if skip_end <= region_start || skip_start >= region_end { continue; }
 
-    // zeros for overlap
-    let zeros_len = ovl_end.saturating_sub(ovl_start);
-    if zeros_len > 0 {
-        let zeros = [0u8; SIG_VALUE_LEN];
-        let mut rem = zeros_len;
-        while rem > 0 {
-            let chunk = rem.min(zeros.len());
-            hasher.update(&zeros[..chunk]);
-            rem -= chunk;
+        let ovl_start = skip_start.max(region_start);
+        let ovl_end   = skip_end.min(region_end);
+
+        // hash bytes before this skip
+        if ovl_start > cursor {
+            let s = cursor - region_start;
+            let e = ovl_start - region_start;
+            hasher.update(&data[s..e]);
         }
+
+        // zero-fill or omit
+        if zero_fill {
+            let zeros_len = ovl_end - ovl_start;
+            let zeros = [0u8; SIG_VALUE_LEN];
+            let mut rem = zeros_len;
+            while rem > 0 {
+                let chunk = rem.min(zeros.len());
+                hasher.update(&zeros[..chunk]);
+                rem -= chunk;
+            }
+        }
+        // if !zero_fill: storage bytes are simply not fed to hasher
+
+        cursor = ovl_end;
     }
 
-    if ovl_end < data.len() {
-        hasher.update(&data[ovl_end..]);
+    // hash remaining
+    if cursor < region_end {
+        let s = cursor - region_start;
+        hasher.update(&data[s..]);
     }
 }

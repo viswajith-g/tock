@@ -15,8 +15,8 @@
 use core::cell::Cell;
 use core::fmt;
 
-use crate::hil::time::Ticks;
-use crate::{debug, debug_now};
+// use crate::hil::time::Ticks;
+use crate::debug; // , debug_now};
 
 use crate::capabilities::ProcessManagementCapability;
 use crate::config;
@@ -497,7 +497,9 @@ pub enum PaddingRequirement {
 // BDT constants (must match bootloader)
 const BDT_ADDR: usize = 0x8000;
 const BDT_MAGIC: [u8; 4] = *b"BDTS";
-const MAX_KERNEL_ENTRIES: usize = 120;
+const MAX_KERNEL_ENTRIES: usize = 10;
+// const BDT_ENTRY_SIZE: usize = 24;
+// const BDT_BINARY_TYPE_OFFSET: usize = 19;
 
 const BINARY_TYPE_KERNEL: u8 = 0x01;
 
@@ -506,9 +508,9 @@ const BINARY_TYPE_KERNEL: u8 = 0x01;
 struct BinaryEntry {
     start_address: u32,
     size: u32,
-    version: [u8; 3],
+    // version: [u8; 3],
     binary_type: u8,
-    reserved: [u8; 4],
+    // reserved: [u8; 4],
 }
 
 impl BinaryEntry {
@@ -525,8 +527,8 @@ impl BinaryEntry {
 struct BdtHeader {
     magic: [u8; 4],
     kernel_count: u16,
-    app_count: u16,
-    reserved: [u8; 8],
+    // app_count: u16,
+    // reserved: [u8; 8],
 }
 
 /// Read BDT from flash
@@ -546,11 +548,11 @@ fn read_bdt() -> Option<(BdtHeader, [BinaryEntry; MAX_KERNEL_ENTRIES])> {
                 bdt_ptr.add(4).read_volatile(),
                 bdt_ptr.add(5).read_volatile(),
             ]),
-            app_count: u16::from_le_bytes([
-                bdt_ptr.add(6).read_volatile(),
-                bdt_ptr.add(7).read_volatile(),
-            ]),
-            reserved: [0; 8], // Skip reserved bytes
+            // app_count: u16::from_le_bytes([
+            //     bdt_ptr.add(6).read_volatile(),
+            //     bdt_ptr.add(7).read_volatile(),
+            // ]),
+            // reserved: [0; 8], // Skip reserved bytes
         }
     };
     
@@ -563,9 +565,9 @@ fn read_bdt() -> Option<(BdtHeader, [BinaryEntry; MAX_KERNEL_ENTRIES])> {
     let mut kernel_entries = [BinaryEntry {
         start_address: 0,
         size: 0,
-        version: [0; 3],
+        // version: [0; 3],
         binary_type: 0,
-        reserved: [0; 4],
+        // reserved: [0; 4],
     }; MAX_KERNEL_ENTRIES];
     
     let entries_start = unsafe { bdt_ptr.add(16) };
@@ -585,15 +587,22 @@ fn read_bdt() -> Option<(BdtHeader, [BinaryEntry; MAX_KERNEL_ENTRIES])> {
                     entry_ptr.add(6).read_volatile(),
                     entry_ptr.add(7).read_volatile(),
                 ]),
-                version: [
-                    entry_ptr.add(8).read_volatile(),
-                    entry_ptr.add(9).read_volatile(),
-                    entry_ptr.add(10).read_volatile(),
-                ],
+                // version: [
+                //     entry_ptr.add(8).read_volatile(),
+                //     entry_ptr.add(9).read_volatile(),
+                //     entry_ptr.add(10).read_volatile(),
+                // ],
                 binary_type: entry_ptr.add(11).read_volatile(),
-                reserved: [0; 4],
+                // reserved: [0; 4],
             }
         };
+        // debug!(
+        //         "BDT entry {}: start={:#x} size={:#x} type={}",
+        //         i,
+        //         kernel_entries[i].start_address,
+        //         kernel_entries[i].size,
+        //         kernel_entries[i].binary_type
+        //     );
     }
     
     Some((header, kernel_entries))
@@ -648,10 +657,11 @@ pub struct SequentialProcessLoaderMachine<'a, C: Chip + 'static, D: ProcessStand
     state: OptionalCell<SequentialProcessLoaderMachineState>,
     /// Current operating mode of the loading machine.
     run_mode: OptionalCell<SequentialProcessLoaderMachineRunMode>,
-    // Store timestamp for debug
-    timestamp: Cell<u32>,
-    cred_timestamp: Cell<u32>,
-    load_timestamp: Cell<u32>,
+    // // Store timestamp for debug
+    // timestamp: Cell<u32>,
+    // cred_timestamp: Cell<u32>,
+    // load_timestamp: Cell<u32>,
+    exclusion_cache: Cell<Option<([Option<ExclusionRegion>; 16], usize)>>,
 }
 
 impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C, D> {
@@ -687,41 +697,42 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             fault_policy,
             storage_policy,
             state: OptionalCell::empty(),
-            timestamp: Cell::new(0),
-            cred_timestamp: Cell::new(0),
-            load_timestamp: Cell::new(0),
+            // timestamp: Cell::new(0),
+            // cred_timestamp: Cell::new(0),
+            // load_timestamp: Cell::new(0),
+            exclusion_cache: Cell::new(None),
         }
     }
 
     /// Debug Timer
-    fn read_timer(&self) -> u32 {
-        debug_now!()
-    }
+    // fn read_timer(&self) -> u32 {
+    //     debug_now!()
+    // }
 
-    fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
-        let t2 = self.read_timer();
-        let t1 = timestamp.get();
+    // fn elapsed_time(&self, timestamp: &Cell<u32>) -> (f32, &str) {
+    //     let t2 = self.read_timer();
+    //     let t1 = timestamp.get();
 
-        timestamp.set(0);
-        let elapsed_ticks = t2.wrapping_sub(t1);
+    //     timestamp.set(0);
+    //     let elapsed_ticks = t2.wrapping_sub(t1);
 
-        // let freq = R::frequency();
-        // debug!("Frequency value: {:?}", freq);
-        // Clock set to 1Mhz
-        let mut elapsed = (elapsed_ticks) as f32;
+    //     // let freq = R::frequency();
+    //     // debug!("Frequency value: {:?}", freq);
+    //     // Clock set to 1Mhz
+    //     let mut elapsed = (elapsed_ticks) as f32;
 
-        let mut units = "us";
-        if elapsed > 1000000.0 {
-            elapsed = elapsed * 0.000001;
-            units = "s";
-        }
-        if elapsed > 1000.0 {
-            elapsed = elapsed * 0.001;
-            units = "ms";
-        }
+    //     let mut units = "us";
+    //     if elapsed > 1000000.0 {
+    //         elapsed = elapsed * 0.000001;
+    //         units = "s";
+    //     }
+    //     if elapsed > 1000.0 {
+    //         elapsed = elapsed * 0.001;
+    //         units = "ms";
+    //     }
 
-        (elapsed, units)
-    }
+    //     (elapsed, units)
+    // }
 
     /// Set the runtime client to receive callbacks about process loading and when
     /// process loading has finished.
@@ -772,45 +783,38 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
 
     /// Build exclusion list once at the start of loading
     fn build_exclusion_list(&self) -> ([Option<ExclusionRegion>; 16], usize) {
+        if let Some(cached) = self.exclusion_cache.get() {
+            return cached;
+        }
+
         let mut exclusions = [None; 16];
         let mut count = 0;
-        
-        // Bootloader region (0x0 - 0x9000)
-        exclusions[count] = Some(ExclusionRegion {
-            start: 0x0,
-            end: 0x9000,
-        });
+
+        exclusions[count] = Some(ExclusionRegion { start: 0x0, end: 0x9000 });
         count += 1;
-        
-        if config::CONFIG.debug_load_processes {
-            debug!("Exclusion: Bootloader 0x0 - 0x9000");
-        }
-        
-        // Read BDT and add kernel regions
+
         if let Some((header, kernel_entries)) = read_bdt() {
             let kernel_count = header.kernel_count as usize;
-            
             for i in 0..kernel_count.min(MAX_KERNEL_ENTRIES) {
                 let entry = &kernel_entries[i];
                 if entry.binary_type == BINARY_TYPE_KERNEL && entry.is_valid() {
-                    let start = entry.start_address as usize;
-                    let end = start + entry.size as usize;
-                    
-                    exclusions[count] = Some(ExclusionRegion { start, end });
+                    exclusions[count] = Some(ExclusionRegion {
+                        start: entry.start_address as usize,
+                        end: entry.start_address as usize + entry.size as usize,
+                    });
                     count += 1;
-                    
-                    if config::CONFIG.debug_load_processes {
-                        debug!("Exclusion: Kernel 0x{:x} - 0x{:x}", start, end);
-                    }
-                    
-                    if count >= 16 {
-                        break;
-                    }
+                    if count >= 16 { break; }
                 }
             }
         }
-        
-        (exclusions, count)
+
+        let result = (exclusions, count);
+        self.exclusion_cache.set(Some(result));
+        result
+    }
+
+    fn invalidate_exclusion_cache(&self) {
+        self.exclusion_cache.set(None);
     }
     
     /// Check if address is in an exclusion region, return end address if true
@@ -828,20 +832,20 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     }
 
     fn load_and_check(&self) {
-        self.load_timestamp.set(self.read_timer());
+        // self.load_timestamp.set(self.read_timer());
         match self.run_mode.get() {
             Some(SequentialProcessLoaderMachineRunMode::RuntimeMode) => {
                 // We already know exactly where the app is located
                 // Just discover and check the binary at the current flash position
                 match self.discover_process_binary() {
                     Ok(pb) => {
-                        let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
-                        debug!(
-                            "Time spent in discover_process_binary: {}{}",
-                            elapsed, units
-                        );
-                        self.load_timestamp.set(self.read_timer());
-                        self.cred_timestamp.set(self.read_timer());
+                        // let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
+                        // debug!(
+                        //     "Time spent in discover_process_binary: {}{}",
+                        //     elapsed, units
+                        // );
+                        // self.load_timestamp.set(self.read_timer());
+                        // self.cred_timestamp.set(self.read_timer());
                         match self.checker.check(pb) {
                             Ok(()) => return, // Wait on checker response
                             Err(_e) => {
@@ -859,60 +863,115 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                 }
             }
             
+            // Some(SequentialProcessLoaderMachineRunMode::BootMode) | None => {
+            //     // Scan entire flash, automatically skip exclusion zones
+            //     let mut app_starts = [0usize; 10];
+            //     let mut app_ends = [0usize; 10];
+                
+            //     let _ = self.scan_flash_for_process_binaries(
+            //         self.flash_bank.get(),
+            //         &mut app_starts,
+            //         &mut app_ends
+            //     );
+                
+            //     // Track flash traversal
+            //     let current_pos = self.flash.get().as_ptr() as usize;
+                
+            //     // Find the first app
+            //     for i in 0..app_starts.len() {
+            //         if app_starts[i] == 0 {
+            //             break; // No more apps
+            //         }
+                    
+            //         if app_starts[i] < current_pos {
+            //             continue; // Already crossed this region
+            //         }
+                    
+            //         let flash_bank = self.flash_bank.get();
+            //         let offset_start = app_starts[i] - flash_bank.as_ptr() as usize;
+            //         let offset_end = app_ends[i] - flash_bank.as_ptr() as usize;
+                    
+            //         if let Some(app_flash) = flash_bank.get(offset_start..offset_end) {
+            //             self.flash.set(app_flash);
+                        
+            //             match self.discover_process_binary() {
+            //                 Ok(pb) => {
+            //                     match self.checker.check(pb) {
+            //                         // Wait for checker async callback
+            //                         Ok(()) => {return;}
+            //                         // Check failed, continue to next app
+            //                         Err(_e) => {continue;}
+            //                     }
+            //                 }
+            //                 Err(_e) => {
+            //                     // Binary discovery failed, continue to next app
+            //                     continue;
+            //                 }
+            //             }
+            //         }
+            //     }
+                
+            //     // All apps checked, move to loading
+            //     self.state.set(SequentialProcessLoaderMachineState::LoadProcesses);
+            //     self.deferred_call.set();
+            // }
             Some(SequentialProcessLoaderMachineRunMode::BootMode) | None => {
-                // Scan entire flash, automatically skip exclusion zones
                 let mut app_starts = [0usize; 10];
                 let mut app_ends = [0usize; 10];
-                
+
                 let _ = self.scan_flash_for_process_binaries(
                     self.flash_bank.get(),
                     &mut app_starts,
-                    &mut app_ends
+                    &mut app_ends,
                 );
-                
-                // Track flash traversal
+
+                let flash_bank = self.flash_bank.get();
                 let current_pos = self.flash.get().as_ptr() as usize;
-                
-                // Find the first app
+
                 for i in 0..app_starts.len() {
                     if app_starts[i] == 0 {
-                        break; // No more apps
+                        break;
                     }
-                    
+
+                    // Skip apps we've already processed in a previous callback
                     if app_starts[i] < current_pos {
-                        continue; // Already crossed this region
+                        continue;
                     }
-                    
-                    let flash_bank = self.flash_bank.get();
+
                     let offset_start = app_starts[i] - flash_bank.as_ptr() as usize;
                     let offset_end = app_ends[i] - flash_bank.as_ptr() as usize;
-                    
+
                     if let Some(app_flash) = flash_bank.get(offset_start..offset_end) {
+                        // Point flash directly at this app's exact slice
                         self.flash.set(app_flash);
-                        
+
                         match self.discover_process_binary() {
                             Ok(pb) => {
+                                // Advance current_pos past this app before yielding
+                                // so the next callback skips it correctly
+                                let next_pos = app_ends[i];
+                                if let Some(remaining) = flash_bank.get(
+                                    next_pos - flash_bank.as_ptr() as usize..
+                                ) {
+                                    self.flash.set(remaining);
+                                }
+
                                 match self.checker.check(pb) {
-                                    // Wait for checker async callback
-                                    Ok(()) => {return;}
-                                    // Check failed, continue to next app
-                                    Err(_e) => {continue;}
+                                    Ok(()) => return,
+                                    Err(_) => continue,
                                 }
                             }
-                            Err(_e) => {
-                                // Binary discovery failed, continue to next app
-                                continue;
-                            }
+                            Err(_) => continue,
                         }
                     }
                 }
-                
-                // All apps checked, move to loading
+
                 self.state.set(SequentialProcessLoaderMachineState::LoadProcesses);
                 self.deferred_call.set();
             }
         }
     }
+    
 
     /// Try to parse a process binary from flash.
     ///
@@ -938,7 +997,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
     ///
     /// This verifies that the discovered processes are valid to run.
     fn load_process_objects(&self) -> Result<(), ()> {
-         self.load_timestamp.set(self.read_timer());
+        //  self.load_timestamp.set(self.read_timer());
         let proc_binaries = self.proc_binaries.take().ok_or(())?;
         let proc_binaries_len = proc_binaries.len();
 
@@ -994,7 +1053,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                             policy.to_short_id(&process_binary)
                         });
 
-                        self.load_timestamp.set(self.read_timer());
+                        // self.load_timestamp.set(self.read_timer());
                         // Try to create a `Process` object.
                         let load_result = load_process(
                             self.kernel,
@@ -1058,11 +1117,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
 
         // We have iterated all discovered `ProcessBinary`s and loaded what we
         // could so now we can signal that process loading is finished.
-        let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
-        debug!("Time spent in load_process_objects: {}{}", elapsed, units);
-        self.get_current_client().map(|client| {
-            client.process_loading_finished();
-        });
+        // let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
+        // debug!("Time spent in load_process_objects: {}{}", elapsed, units);
         self.get_current_client().map(|client| {
             client.process_loading_finished();
         });
@@ -1495,19 +1551,19 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         let total_flash_start = total_flash.as_ptr() as usize;
         let total_flash_end = total_flash_start + total_flash.len() - 1;
 
-        self.timestamp.set(self.read_timer());
+        // self.timestamp.set(self.read_timer());
 
         match self.scan_flash_for_process_binaries(total_flash, pb_start_address, pb_end_address) {
             Ok(()) => {
                 if config::CONFIG.debug_load_processes {
                     debug!("Successfully scanned flash");
                 }
-                let (elapsed, units) = self.elapsed_time(&self.timestamp);
-                debug!(
-                    "Time to scan flash for binary address: {}{}",
-                    elapsed, units
-                );
-                self.timestamp.set(self.read_timer());
+                // let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                // debug!(
+                //     "Time to scan flash for binary address: {}{}",
+                //     elapsed, units
+                // );
+                // self.timestamp.set(self.read_timer());
                 // let new_app_address = match self.compute_new_process_binary_address(
                 //     new_app_size,
                 //     pb_start_address,
@@ -1521,11 +1577,11 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                 if new_app_address + new_app_size - 1 > total_flash_end {
                     Err(ProcessBinaryError::NotEnoughFlash)
                 } else {
-                    let (elapsed, units) = self.elapsed_time(&self.timestamp);
-                    debug!(
-                        "Time to compute new process binary address: {}{}",
-                        elapsed, units
-                    );
+                    // let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                    // debug!(
+                    //     "Time to compute new process binary address: {}{}",
+                    //     elapsed, units
+                    // );
                     Ok(new_app_address)
                 }
             }
@@ -1557,7 +1613,7 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
             &mut pb_end_address,
         ) {
             Ok(app_address) => {
-                self.timestamp.set(self.read_timer());
+                // self.timestamp.set(self.read_timer());
                 // debug!("[pl] app_address: {:?}", app_address);
                 let (pr, prev_app_addr, next_app_addr) = self
                     .compute_padding_requirement_and_neighbors(
@@ -1566,8 +1622,8 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
                         &pb_start_address,
                         &pb_end_address,
                     );
-                let (elapsed, units) = self.elapsed_time(&self.timestamp);
-                debug!("Time to compute padding requirement: {}{}", elapsed, units);
+                // let (elapsed, units) = self.elapsed_time(&self.timestamp);
+                // debug!("Time to compute padding requirement: {}{}", elapsed, units);
                 let (padding_requirement, previous_binary_end_address, next_binary_start_addr) =
                     (pr, prev_app_addr, next_app_addr);
                 Ok((
@@ -1612,15 +1668,15 @@ impl<'a, C: Chip, D: ProcessStandardDebug> SequentialProcessLoaderMachine<'a, C,
         app_address: usize,
         app_size: usize,
     ) -> Result<(), ProcessLoadError> {
-        self.load_timestamp.set(self.read_timer());
+        // self.load_timestamp.set(self.read_timer());
         let flash = self.flash_bank.get();
         let process_address = app_address - flash.as_ptr() as usize;
         let process_flash = flash.get(process_address..process_address + app_size);
         let result = self.check_new_binary_validity(process_address);
         match result {
             true => {
-                let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
-                debug!("Time to check validity of new binary: {}{}", elapsed, units);
+                // let (elapsed, units) = self.elapsed_time(&self.load_timestamp);
+                // debug!("Time to check validity of new binary: {}{}", elapsed, units);
                 if config::CONFIG.debug_load_processes {
                     debug!(
                         "process address: {:#0x}, with a size: {:#00x}", 
@@ -1673,7 +1729,10 @@ impl<'a, C: Chip, D: ProcessStandardDebug> ProcessLoadingAsync<'a>
         self.deferred_call.set();
     }
 }
-
+// const GPIO_P0_BASE: u32 = 0x5000_0000;
+// const GPIO_DIRSET: u32 = GPIO_P0_BASE + 0x518;  // set direction to output
+// const GPIO_OUTSET: u32 = GPIO_P0_BASE + 0x508;  // set pin HIGH
+// const GPIO_OUTCLR: u32 = GPIO_P0_BASE + 0x50C;  // set pin LOW
 impl<C: Chip, D: ProcessStandardDebug> DeferredCallClient
     for SequentialProcessLoaderMachine<'_, C, D>
 {
@@ -1681,6 +1740,12 @@ impl<C: Chip, D: ProcessStandardDebug> DeferredCallClient
         // We use deferred calls to start the operation in the async loop.
         match self.state.get() {
             Some(SequentialProcessLoaderMachineState::DiscoverProcessBinaries) => {
+                // unsafe {
+                //     // set P0.27 as output
+                //     core::ptr::write_volatile(GPIO_DIRSET as *mut u32, 1 << 26);
+                //     // set P0.27 HIGH
+                //     core::ptr::write_volatile(GPIO_OUTCLR as *mut u32, 1 << 26);
+                // }
                 self.load_and_check();
             }
             Some(SequentialProcessLoaderMachineState::LoadProcesses) => {
@@ -1716,8 +1781,8 @@ impl<C: Chip, D: ProcessStandardDebug> crate::process_checker::ProcessCheckerMac
         // Check if this process was approved by the checker.
         match result {
             Ok(optional_credential) => {
-                let (elapsed, units) = self.elapsed_time(&self.cred_timestamp);
-                debug!("Time spent to check credential: {}{}", elapsed, units);
+                // let (elapsed, units) = self.elapsed_time(&self.cred_timestamp);
+                // debug!("Time spent to check credential: {}{}", elapsed, units);
                 if config::CONFIG.debug_load_processes {
                     debug!(
                         "Loading: Check succeeded for process {}",

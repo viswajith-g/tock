@@ -19,7 +19,7 @@ use secure_boot_common::{verify_and_boot, BootloaderIO};
 use secure_boot_common::error::BootError;
 
 // const LED1_PIN: u32 = 13; // P0.13
-// const LED2_PIN: u32 = 14; // P0.14
+const LED2_PIN: u32 = 14; // P0.14
 // const LED3_PIN: u32 = 15; // P0.15
 // const LED4_PIN: u32 = 16; // P0.16
 
@@ -56,11 +56,48 @@ use secure_boot_common::error::BootError;
 // Include the startup assembly code
 core::arch::global_asm!(include_str!("startup.s"));
 
+const GPIO_P0_BASE: u32 = 0x5000_0000;
+const GPIO_DIRSET: u32 = GPIO_P0_BASE + 0x518;  // set direction to output
+const GPIO_OUTSET: u32 = GPIO_P0_BASE + 0x508;  // set pin HIGH
+const GPIO_OUTCLR: u32 = GPIO_P0_BASE + 0x50C;  // set pin LOW
+
 /// Main entry point called by startup code
 #[no_mangle]
 pub extern "C" fn main() -> ! {
+    // Enable DC/DC converter (REG1 at 0x40000578)
+    unsafe {
+        core::ptr::write_volatile(0x4000_0578 as *mut u32, 1);
+    }
+
+    unsafe {
+        // TASKS_LFCLKSTART
+        core::ptr::write_volatile(0x4000_0008 as *mut u32, 1);
+        // Initializing it here so kernel init time is reduced
+    }
+
+
+    // let mut buf = [0u8; 32];
+    unsafe {
+        // set P0.27 as output
+        core::ptr::write_volatile(GPIO_DIRSET as *mut u32, 1 << 26);
+        // set P0.27 HIGH
+        core::ptr::write_volatile(GPIO_OUTCLR as *mut u32, 0 << 26);
+    }
+    
     // Initialize I/O
     let io = Nrf52840IO::new();
+    // let mainregstatus = unsafe { 
+    //     core::ptr::read_volatile(0x4000_0640 as *const u32) 
+    // };
+    // let hfclkstat = unsafe { 
+    //     core::ptr::read_volatile(0x4000040C as *const u32) 
+    // };
+    // let lfclkstat = unsafe {
+    //     core::ptr::read_volatile(0x40000418 as *const u32)
+    // };
+    // io.debug("Main Reg Status");   io.format(mainregstatus as usize, &mut buf);
+    // io.debug("HFCLK Status");   io.format(hfclkstat as usize, &mut buf);
+    // io.debug("LFCLK Status");   io.format(lfclkstat as usize, &mut buf);
     // unsafe{
     //     let gpio_p0_dirset = 0x50000518 as *mut u32;  // P0 DIRSET register
     //     let gpio_p0_outset = 0x50000508 as *mut u32;  // P0 OUTSET register
@@ -115,12 +152,16 @@ pub extern "C" fn main() -> ! {
                 // Kernel Handoff
                 // io.debug("handing off to kernel");
 
-                unsafe { jump_to_kernel(kernel_entry, &io); } 
-            }
+                unsafe {
+                    core::ptr::write_volatile(GPIO_DIRSET as *mut u32, 1 << 26);
+                    // set P0.27 HIGH
+                    core::ptr::write_volatile(GPIO_OUTSET as *mut u32, 1 << 26); 
+                    jump_to_kernel(kernel_entry, &io); } 
+                }
         }
         Err(error) => {
             // Debug: Blink LED2 to show specific error code
-            let _blink_count = match error {
+            let blink_count = match error {
                 BootError::SentinelNotFound => 3,
                 BootError::InvalidTLV => 4,
                 BootError::InvalidSignature => 5,
@@ -136,7 +177,7 @@ pub extern "C" fn main() -> ! {
                 BootError::FlashOperationFailed => 15,
             };
             
-            // io.debug_blink(LED2_PIN, blink_count);
+            io.debug_blink(LED2_PIN, blink_count);
             
             // Verification failed
             io.signal_failure();

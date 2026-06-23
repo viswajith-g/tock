@@ -13,6 +13,7 @@ const NVMC_BASE: usize = 0x4001_E000;
 const NVMC_READY: *const u32 = (NVMC_BASE + 0x400) as *const u32;
 const NVMC_CONFIG: *mut u32 = (NVMC_BASE + 0x504) as *mut u32;
 const NVMC_ERASEPAGE: *mut u32 = (NVMC_BASE + 0x508) as *mut u32;
+const NVMC_ICACHECNF: *mut u32 = (NVMC_BASE + 0x540) as *mut u32;
 
 /// Configuration values
 const CONFIG_REN: u32 = 0; // Read-only
@@ -165,5 +166,17 @@ impl FlashHal {
         Self::set_readonly();
         
         Ok(())
+    }
+
+    pub fn enable_icache() {
+        unsafe {
+            core::ptr::write_volatile(NVMC_ICACHECNF, 1);
+        }
+    }
+
+    pub fn disable_icache() {
+        unsafe {
+            core::ptr::write_volatile(NVMC_ICACHECNF, 0);
+        }
     }
 }

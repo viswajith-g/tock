@@ -7,16 +7,19 @@
 use crate::error::BootError;
 use crate::BootloaderIO;
 use crate::attributes_parser;
+use crate::types::{KernelVersion, SignatureAttribute};
 
 const TOCK: [u8; 4] = [84, 79, 67, 75];
 
 /// Potential kernel found in flash
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct PotentialKernel {
     pub start_address: usize,
     pub size: usize,
     pub attributes_start: usize,
     pub attributes_end: usize,
+    pub version: KernelVersion,
+    pub signature: SignatureAttribute,
 }
 
 
@@ -121,6 +124,10 @@ fn parse_kernel_info<IO: BootloaderIO>(
     // Get kernel flash TLV
     let (_kernel_start, kernel_len) = attributes.kernel_flash
         .ok_or(BootError::InvalidTLV)?;
+    let version = attributes.kernel_version
+        .ok_or(BootError::InvalidTLV)?;
+    let signature = attributes.signature
+        .ok_or(BootError::SignatureMissing)?;
     
     // // let kernel_start = kernel_start as usize;
     let kernel_size = kernel_len as usize;
@@ -145,6 +152,8 @@ fn parse_kernel_info<IO: BootloaderIO>(
         size: kernel_size,
         attributes_start,
         attributes_end,
+        version,
+        signature,
     })
 }
 
